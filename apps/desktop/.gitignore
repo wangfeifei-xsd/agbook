@@ -1,8 +1,2 @@
 src-tauri/target/
 src-tauri/gen/
-
-# `source.png` is a deterministic regenerate-on-demand asset produced by
-# scripts/make-source-icon.mjs; the real icons (icon.icns / icon.ico / *.png)
-# ARE committed so that CI machines can `tauri build` without needing to run
-# the icon pipeline first.
-src-tauri/icons/source.png

@@ -1,10 +1,21 @@
 import { deflateSync, crc32 } from 'node:zlib';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SIZE = 1024;
+
+// If a real `source.png` is already committed, do NOT overwrite it with the
+// placeholder. The placeholder only exists as a bootstrap so `tauri icon`
+// has something to consume on a clean machine. Pass `--force` to regenerate.
+const outDir = join(__dirname, '..', 'src-tauri', 'icons');
+const outPath = join(outDir, 'source.png');
+const force = process.argv.includes('--force');
+if (existsSync(outPath) && !force) {
+  console.log(`[icon] ${outPath} already exists; skipping placeholder (pass --force to overwrite)`);
+  process.exit(0);
+}
 
 function chunk(type, data) {
   const len = Buffer.alloc(4);
@@ -54,8 +65,6 @@ const png = Buffer.concat([
   chunk('IEND', Buffer.alloc(0)),
 ]);
 
-const outDir = join(__dirname, '..', 'src-tauri', 'icons');
 mkdirSync(outDir, { recursive: true });
-const outPath = join(outDir, 'source.png');
 writeFileSync(outPath, png);
 console.log(`[icon] wrote ${outPath} (${png.length} bytes)`);
