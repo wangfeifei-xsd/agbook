@@ -481,6 +481,73 @@ export const Drafts = {
     );
     return this.getVersion(vid)!;
   },
+  countVersions(draftId: string): number {
+    const row = db.prepare('SELECT COUNT(*) as c FROM draft_versions WHERE draft_id = ?').get(draftId) as { c: number };
+    return row?.c ?? 0;
+  },
+  /**
+   * Physically delete one draft version. If it is currently the `current_version_id`
+   * of its draft we fall back to the most recent remaining version (or clear it
+   * when none remain) so foreign-key pointers never dangle.
+   *
+   * NOTE: `chapter_summaries.draft_version_id` has NO ON DELETE CASCADE in the
+   * schema, so we intentionally clean up any summary rows that pointed at the
+   * version here. `review_reports` likewise references the version id but has
+   * no FK constraint, so we leave historical reports alone (they remain
+   * readable but are associated with a now-missing version).
+   */
+  deleteVersion(versionId: string): { draftId: string; newCurrentVersionId: string | null } | null {
+    const version = this.getVersion(versionId);
+    if (!version) return null;
+    const draftRow = db.prepare('SELECT * FROM chapter_drafts WHERE id = ?').get(version.draftId) as any;
+    if (!draftRow) {
+      db.prepare('DELETE FROM draft_versions WHERE id = ?').run(versionId);
+      return { draftId: version.draftId, newCurrentVersionId: null };
+    }
+    db.prepare('DELETE FROM chapter_summaries WHERE draft_version_id = ?').run(versionId);
+    db.prepare('DELETE FROM draft_versions WHERE id = ?').run(versionId);
+    let newCurrent: string | null = draftRow.current_version_id ?? null;
+    if (draftRow.current_version_id === versionId) {
+      const fallback = db.prepare(
+        'SELECT id FROM draft_versions WHERE draft_id = ? ORDER BY version_number DESC LIMIT 1'
+      ).get(version.draftId) as { id: string } | undefined;
+      newCurrent = fallback?.id ?? null;
+      db.prepare('UPDATE chapter_drafts SET current_version_id = ?, updated_at = ? WHERE id = ?')
+        .run(newCurrent, now(), version.draftId);
+    }
+    return { draftId: version.draftId, newCurrentVersionId: newCurrent };
+  },
+  /**
+   * Keep the `keep` most recent versions per draft. Always preserves the
+   * currentVersionId even if it falls outside the window (so the chapter
+   * body the user sees on screen never silently disappears).
+   * Returns number of rows removed.
+   */
+  pruneVersions(draftId: string, keep: number): number {
+    if (keep < 1) keep = 1;
+    const draftRow = db.prepare('SELECT current_version_id FROM chapter_drafts WHERE id = ?').get(draftId) as any;
+    const currentId: string | null = draftRow?.current_version_id ?? null;
+    const versions = this.listVersions(draftId);
+    if (versions.length <= keep) return 0;
+    const keepIds = new Set<string>();
+    for (let i = 0; i < keep && i < versions.length; i++) keepIds.add(versions[i].id);
+    if (currentId) keepIds.add(currentId);
+    const toDelete = versions.filter(v => !keepIds.has(v.id));
+    if (toDelete.length === 0) return 0;
+    const delSummary = db.prepare('DELETE FROM chapter_summaries WHERE draft_version_id = ?');
+    const delVersion = db.prepare('DELETE FROM draft_versions WHERE id = ?');
+    const tx = db.transaction((rows: DraftVersion[]) => {
+      for (const v of rows) {
+        delSummary.run(v.id);
+        delVersion.run(v.id);
+      }
+    });
+    tx(toDelete);
+    return toDelete.length;
+  },
+  listAllDraftIds(): string[] {
+    return (db.prepare('SELECT id FROM chapter_drafts').all() as { id: string }[]).map(r => r.id);
+  },
 };
 
 export const Reviews = {
@@ -509,6 +576,33 @@ export const Reviews = {
       ts
     );
     return this.get(rid)!;
+  },
+  delete(id: string): void {
+    db.prepare('DELETE FROM review_reports WHERE id = ?').run(id);
+  },
+  deleteByPlan(chapterPlanId: string): number {
+    const info = db.prepare('DELETE FROM review_reports WHERE chapter_plan_id = ?').run(chapterPlanId);
+    return info.changes ?? 0;
+  },
+  /**
+   * Keep the `keep` most recent review reports per chapter plan. Reports are
+   * pure history (not pointed at by anything else), so we just drop the tail.
+   */
+  pruneByPlan(chapterPlanId: string, keep: number): number {
+    if (keep < 0) keep = 0;
+    const reports = this.listByPlan(chapterPlanId);
+    if (reports.length <= keep) return 0;
+    const toDelete = reports.slice(keep);
+    const stmt = db.prepare('DELETE FROM review_reports WHERE id = ?');
+    const tx = db.transaction((rows: ReviewReport[]) => {
+      for (const r of rows) stmt.run(r.id);
+    });
+    tx(toDelete);
+    return toDelete.length;
+  },
+  listAllPlanIds(): string[] {
+    return (db.prepare('SELECT DISTINCT chapter_plan_id FROM review_reports').all() as { chapter_plan_id: string }[])
+      .map(r => r.chapter_plan_id);
   },
 };
 
@@ -638,8 +732,12 @@ export const ChapterSummaries = {
     );
     return this.getByVersion(input.draftVersionId)!;
   },
-  deleteByPlan(chapterPlanId: string): void {
-    db.prepare('DELETE FROM chapter_summaries WHERE chapter_plan_id = ?').run(chapterPlanId);
+  delete(id: string): void {
+    db.prepare('DELETE FROM chapter_summaries WHERE id = ?').run(id);
+  },
+  deleteByPlan(chapterPlanId: string): number {
+    const info = db.prepare('DELETE FROM chapter_summaries WHERE chapter_plan_id = ?').run(chapterPlanId);
+    return info.changes ?? 0;
   },
 };
 
@@ -838,5 +936,77 @@ export const CharStates = {
   },
   delete(id: string): void {
     db.prepare('DELETE FROM character_states WHERE id = ?').run(id);
+  },
+};
+
+/**
+ * Database housekeeping helpers — surfaced via /api/maintenance/* so the UI
+ * can show per-table row counts and the user can manually compact the file
+ * (`VACUUM`) or purge old versions/reviews that otherwise accumulate forever.
+ */
+export const Maintenance = {
+  /** Return per-table row counts plus the on-disk DB size in bytes. */
+  stats(): {
+    tables: Record<string, number>;
+    dbSizeBytes: number;
+    draftVersionBytes: number;
+  } {
+    const tables = [
+      'novels',
+      'setting_items',
+      'outline_nodes',
+      'chapter_plans',
+      'chapter_drafts',
+      'draft_versions',
+      'review_reports',
+      'model_providers',
+      'chapter_summaries',
+      'arc_summaries',
+      'narrative_threads',
+      'character_states',
+    ];
+    const counts: Record<string, number> = {};
+    for (const t of tables) {
+      const row = db.prepare(`SELECT COUNT(*) as c FROM ${t}`).get() as { c: number };
+      counts[t] = row?.c ?? 0;
+    }
+    const pageCount = (db.pragma('page_count', { simple: true }) as number) ?? 0;
+    const pageSize = (db.pragma('page_size', { simple: true }) as number) ?? 0;
+    const dbSizeBytes = pageCount * pageSize;
+    const draftRow = db.prepare(
+      'SELECT COALESCE(SUM(LENGTH(content)), 0) as s FROM draft_versions'
+    ).get() as { s: number };
+    return {
+      tables: counts,
+      dbSizeBytes,
+      draftVersionBytes: draftRow?.s ?? 0,
+    };
+  },
+  /**
+   * Rebuild the SQLite file to reclaim space freed by DELETEs. Must run
+   * outside any transaction; `better-sqlite3` will throw otherwise.
+   */
+  vacuum(): void {
+    db.exec('VACUUM');
+  },
+  /**
+   * Prune every draft to the last `keep` versions (currentVersionId is always
+   * preserved — see {@link Drafts.pruneVersions}).
+   */
+  pruneAllDraftVersions(keep: number): { drafts: number; removed: number } {
+    const ids = Drafts.listAllDraftIds();
+    let removed = 0;
+    for (const id of ids) removed += Drafts.pruneVersions(id, keep);
+    return { drafts: ids.length, removed };
+  },
+  /**
+   * Prune review reports to the last `keep` per chapter plan. `keep === 0`
+   * wipes all historical reports.
+   */
+  pruneAllReviews(keep: number): { plans: number; removed: number } {
+    const ids = Reviews.listAllPlanIds();
+    let removed = 0;
+    for (const id of ids) removed += Reviews.pruneByPlan(id, keep);
+    return { plans: ids.length, removed };
   },
 };

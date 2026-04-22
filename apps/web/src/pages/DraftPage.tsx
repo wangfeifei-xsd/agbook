@@ -4,7 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { ContextOverridesPanel } from '../components/ContextOverridesPanel';
 import { useToast } from '../components/Toast';
-import type { ContextOverrides, GenerateResult, ReviewIssue } from '../types';
+import type { ContextOverrides, DraftVersion, GenerateResult, ReviewIssue } from '../types';
 
 const SEVERITY_COLOR: Record<string, string> = {
   info: 'bg-ink-700 text-ink-200',
@@ -38,7 +38,7 @@ export function DraftPage() {
   const { novelId, planId } = useParams();
   const qc = useQueryClient();
   const toast = useToast();
-  const [tab, setTab] = useState<'preview' | 'review' | 'summary' | 'config'>('preview');
+  const [tab, setTab] = useState<'preview' | 'review' | 'summary' | 'config' | 'versions'>('preview');
   const [lastResult, setLastResult] = useState<GenerateResult | null>(null);
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
@@ -195,6 +195,53 @@ export function DraftPage() {
     onError: (e) => toast.error(`保存失败：${(e as Error).message}`),
   });
 
+  const deleteVersionMut = useMutation({
+    mutationFn: (versionId: string) => api.deleteDraftVersion(versionId),
+    onSuccess: () => {
+      refetchDraft();
+      refetchSummary();
+      toast.success('版本已删除');
+    },
+    onError: (e) => toast.error(`删除失败：${(e as Error).message}`),
+  });
+
+  const pruneVersionsMut = useMutation({
+    mutationFn: (keep: number) => api.pruneDraftVersions(planId!, keep),
+    onSuccess: (res) => {
+      refetchDraft();
+      refetchSummary();
+      toast.success(`已清理 ${res.removed} 个历史版本`);
+    },
+    onError: (e) => toast.error(`清理失败：${(e as Error).message}`),
+  });
+
+  const deleteReviewMut = useMutation({
+    mutationFn: (reviewId: string) => api.deleteReview(reviewId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['reviews', planId] });
+      toast.success('审核记录已删除');
+    },
+    onError: (e) => toast.error(`删除失败：${(e as Error).message}`),
+  });
+
+  const pruneReviewsMut = useMutation({
+    mutationFn: (keep: number) => api.pruneReviewsForPlan(planId!, keep),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['reviews', planId] });
+      toast.success(`已清理 ${res.removed} 条审核记录`);
+    },
+    onError: (e) => toast.error(`清理失败：${(e as Error).message}`),
+  });
+
+  const deleteSummariesMut = useMutation({
+    mutationFn: () => api.deleteChapterSummariesForPlan(planId!),
+    onSuccess: (res) => {
+      refetchSummary();
+      toast.success(`已删除 ${res.removed} 条摘要记录`);
+    },
+    onError: (e) => toast.error(`删除失败：${(e as Error).message}`),
+  });
+
   const summarizeMut = useMutation({
     mutationFn: () => api.summarizeChapter(planId!),
     onSuccess: (res) => {
@@ -316,6 +363,13 @@ export function DraftPage() {
             审核结果
             {lastIssues.length > 0 && <span className="ml-1 text-[10px] text-red-400">· {lastIssues.length}</span>}
           </button>
+          <button className={`flex-1 py-2 text-xs ${tab === 'versions' ? 'bg-ink-800 text-brand-500' : 'text-ink-300'}`}
+            onClick={() => setTab('versions')}>
+            版本
+            {(draftData?.versions?.length ?? 0) > 0 && (
+              <span className="ml-1 text-[10px] text-ink-400">· {draftData!.versions.length}</span>
+            )}
+          </button>
         </div>
 
         <div className="flex-1 overflow-auto scrollbar-thin p-4 text-sm">
@@ -364,11 +418,24 @@ export function DraftPage() {
                     ? `绑定版本 v${draftData?.versions.find(v => v.id === summaryData.summary!.draftVersionId)?.versionNumber ?? '?'} · ${new Date(summaryData.summary.updatedAt).toLocaleString()}`
                     : '当前章节尚无摘要'}
                 </div>
-                <button className="btn btn-ghost text-xs"
-                  disabled={!draftData?.current || summarizeMut.isPending}
-                  onClick={() => summarizeMut.mutate()}>
-                  {summarizeMut.isPending ? '总结中…' : (summaryData?.summary ? '重新总结' : '生成本章摘要')}
-                </button>
+                <div className="flex gap-2">
+                  <button className="btn btn-ghost text-xs"
+                    disabled={!draftData?.current || summarizeMut.isPending}
+                    onClick={() => summarizeMut.mutate()}>
+                    {summarizeMut.isPending ? '总结中…' : (summaryData?.summary ? '重新总结' : '生成本章摘要')}
+                  </button>
+                  {summaryData?.summary && (
+                    <button className="btn btn-ghost text-xs text-red-300 hover:text-red-400"
+                      disabled={deleteSummariesMut.isPending}
+                      onClick={() => {
+                        if (confirm('删除本章所有摘要记录？生成过程依赖的是最近一条，其余历史记录可安全清理。')) {
+                          deleteSummariesMut.mutate();
+                        }
+                      }}>
+                      {deleteSummariesMut.isPending ? '清理中…' : '清空摘要'}
+                    </button>
+                  )}
+                </div>
               </div>
               {!draftData?.current && (
                 <div className="text-ink-500">当前章节没有已保存的正文版本，无法生成摘要。</div>
@@ -429,7 +496,7 @@ export function DraftPage() {
                 </div>
               )}
             </div>
-          ) : (
+          ) : tab === 'review' ? (
             <div className="space-y-3">
               {lastResult2 && (
                 <div className={`rounded px-3 py-2 text-sm ${
@@ -456,22 +523,128 @@ export function DraftPage() {
                   ))}
                 </ul>
               )}
-              {reviews.length > 1 && (
+              {reviews.length > 0 && (
                 <div>
-                  <div className="text-xs text-ink-400 mt-4 mb-2">历史审核</div>
+                  <div className="flex items-center justify-between mt-4 mb-2">
+                    <div className="text-xs text-ink-400">历史审核 · 共 {reviews.length} 条</div>
+                    {reviews.length > 3 && (
+                      <button className="btn btn-ghost text-[10px] px-2 py-0.5 text-ink-400 hover:text-red-400"
+                        disabled={pruneReviewsMut.isPending}
+                        onClick={() => {
+                          if (confirm(`仅保留最近 3 条审核记录，删除其余 ${reviews.length - 3} 条？`)) {
+                            pruneReviewsMut.mutate(3);
+                          }
+                        }}>
+                        {pruneReviewsMut.isPending ? '清理中…' : '只保留最近3条'}
+                      </button>
+                    )}
+                  </div>
                   <ul className="space-y-1">
-                    {reviews.slice(1).map(r => (
-                      <li key={r.id} className="text-xs text-ink-400">
-                        {new Date(r.createdAt).toLocaleString()} · {r.result} · {r.issues.length} 项问题
+                    {reviews.map(r => (
+                      <li key={r.id} className="text-xs text-ink-400 flex items-center justify-between gap-2 bg-ink-900/60 border border-ink-800 rounded px-2 py-1">
+                        <span className="truncate">
+                          {new Date(r.createdAt).toLocaleString()} · {r.result} · {r.issues.length} 项问题
+                        </span>
+                        <button className="text-ink-500 hover:text-red-400 shrink-0"
+                          disabled={deleteReviewMut.isPending}
+                          onClick={() => {
+                            if (confirm('删除这条审核记录？')) deleteReviewMut.mutate(r.id);
+                          }}>
+                          删除
+                        </button>
                       </li>
                     ))}
                   </ul>
                 </div>
               )}
             </div>
+          ) : (
+            <VersionsPanel
+              versions={draftData?.versions ?? []}
+              currentVersionId={draftData?.current?.id ?? null}
+              onDelete={(id) => deleteVersionMut.mutate(id)}
+              onPrune={(keep) => pruneVersionsMut.mutate(keep)}
+              deletingId={deleteVersionMut.isPending ? (deleteVersionMut.variables as string) : null}
+              isPruning={pruneVersionsMut.isPending}
+            />
           )}
         </div>
       </aside>
+    </div>
+  );
+}
+
+function VersionsPanel({
+  versions,
+  currentVersionId,
+  onDelete,
+  onPrune,
+  deletingId,
+  isPruning,
+}: {
+  versions: DraftVersion[];
+  currentVersionId: string | null;
+  onDelete: (id: string) => void;
+  onPrune: (keep: number) => void;
+  deletingId: string | null;
+  isPruning: boolean;
+}) {
+  if (versions.length === 0) {
+    return <div className="text-ink-500 text-sm">尚无草稿版本。每次「生成本章」或手动保存都会产生一个新版本。</div>;
+  }
+  const excess = versions.length - 5;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-ink-400">共 {versions.length} 个版本</div>
+        {excess > 0 && (
+          <button className="btn btn-ghost text-[10px] px-2 py-0.5 text-ink-400 hover:text-red-400"
+            disabled={isPruning}
+            onClick={() => {
+              if (confirm(`仅保留最近 5 个版本（当前版本不会被删），清理其余 ${excess} 个？\n\n注：每个历史版本都保存了完整章节正文，章节越多冗余占用越大。`)) {
+                onPrune(5);
+              }
+            }}>
+            {isPruning ? '清理中…' : '只保留最近5个'}
+          </button>
+        )}
+      </div>
+      <ul className="space-y-1">
+        {versions.map(v => {
+          const isCurrent = v.id === currentVersionId;
+          const chars = v.content?.length ?? 0;
+          return (
+            <li key={v.id}
+              className={`flex items-center justify-between gap-2 border rounded px-2 py-1.5 text-xs
+                ${isCurrent ? 'border-brand-500/60 bg-brand-500/10' : 'border-ink-800 bg-ink-900/60'}`}>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-ink-200 font-medium">v{v.versionNumber}</span>
+                  {isCurrent && <span className="tag bg-brand-600/30 text-brand-200">当前</span>}
+                  <span className="tag">{v.sourceType}</span>
+                </div>
+                <div className="text-ink-500 mt-0.5 truncate">
+                  {new Date(v.createdAt).toLocaleString()} · {chars.toLocaleString()} 字符
+                </div>
+              </div>
+              <button className="text-ink-500 hover:text-red-400 shrink-0"
+                disabled={deletingId === v.id}
+                title={isCurrent ? '删除当前版本后，将自动回退到更早的一个版本' : '删除此历史版本'}
+                onClick={() => {
+                  const msg = isCurrent
+                    ? '此版本是当前显示版本。删除后会自动回退到更早的版本。确认删除？'
+                    : `删除 v${v.versionNumber}？`;
+                  if (confirm(msg)) onDelete(v.id);
+                }}>
+                {deletingId === v.id ? '…' : '删除'}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="text-[11px] text-ink-500 leading-5">
+        提示：每个版本都保存了完整章节正文，章节多了后占用会显著增长。「只保留最近 N 个」会批量清理历史版本，当前显示版本始终保留。
+      </div>
     </div>
   );
 }

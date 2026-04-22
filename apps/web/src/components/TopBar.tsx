@@ -28,6 +28,8 @@ export function TopBar() {
         <Link to="/novels" className="text-ink-300 hover:text-ink-100">小说库</Link>
         <span className="text-ink-600">|</span>
         <Link to="/providers" className="text-ink-300 hover:text-ink-100">模型配置</Link>
+        <span className="text-ink-600">|</span>
+        <Link to="/maintenance" className="text-ink-300 hover:text-ink-100">数据库维护</Link>
       </div>
     </header>
   );

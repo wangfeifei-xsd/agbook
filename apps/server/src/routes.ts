@@ -6,6 +6,7 @@ import {
   ChapterSummaries,
   CharStates,
   Drafts,
+  Maintenance,
   Novels,
   Outlines,
   Providers,
@@ -279,6 +280,29 @@ export async function registerRoutes(app: FastifyInstance) {
     return { draftId: draft.id, versionId: version.id };
   });
 
+  app.delete('/api/draft-versions/:id', async (req, reply) => {
+    const { id } = req.params as any;
+    const result = Drafts.deleteVersion(id);
+    if (!result) return reply.code(404).send({ error: 'version not found' });
+    return { ok: true, ...result };
+  });
+
+  /**
+   * Prune older draft versions of a given chapter plan. Keeps the latest
+   * `keep` versions plus whatever is pointed at by currentVersionId.
+   * Body: `{ keep: number }` — defaults to 5.
+   */
+  app.post('/api/chapter-plans/:id/draft/prune', async (req, reply) => {
+    const { id } = req.params as any;
+    const plan = ChapterPlans.get(id);
+    if (!plan) return reply.code(404).send({ error: 'plan not found' });
+    const body = z.object({ keep: z.number().int().min(1).max(100).optional() }).parse(req.body ?? {});
+    const draft = Drafts.getByPlan(id);
+    if (!draft) return { removed: 0 };
+    const removed = Drafts.pruneVersions(draft.id, body.keep ?? 5);
+    return { removed };
+  });
+
   // Context preview (uses overrides saved on the plan)
   app.get('/api/chapter-plans/:id/preview', async (req, reply) => {
     const { id } = req.params as any;
@@ -343,6 +367,27 @@ export async function registerRoutes(app: FastifyInstance) {
     return Reviews.listByPlan(id);
   });
 
+  app.delete('/api/reviews/:id', async (req) => {
+    const { id } = req.params as any;
+    Reviews.delete(id);
+    return { ok: true };
+  });
+
+  /** Wipe all review reports for a chapter. Use when resetting a chapter. */
+  app.delete('/api/chapter-plans/:id/reviews', async (req) => {
+    const { id } = req.params as any;
+    const removed = Reviews.deleteByPlan(id);
+    return { removed };
+  });
+
+  /** Keep only the most recent `keep` review reports for one chapter. */
+  app.post('/api/chapter-plans/:id/reviews/prune', async (req) => {
+    const { id } = req.params as any;
+    const body = z.object({ keep: z.number().int().min(0).max(100).optional() }).parse(req.body ?? {});
+    const removed = Reviews.pruneByPlan(id, body.keep ?? 3);
+    return { removed };
+  });
+
   // Providers
   app.get('/api/providers', async () => Providers.list());
   app.post('/api/providers', async (req) => {
@@ -379,6 +424,19 @@ export async function registerRoutes(app: FastifyInstance) {
     const { id } = req.params as any;
     const summary = ChapterSummaries.getByPlan(id);
     return { summary };
+  });
+
+  /** Drop all summary rows for this chapter (there can be >1 per version). */
+  app.delete('/api/chapter-plans/:id/summary', async (req) => {
+    const { id } = req.params as any;
+    const removed = ChapterSummaries.deleteByPlan(id);
+    return { removed };
+  });
+
+  app.delete('/api/chapter-summaries/:id', async (req) => {
+    const { id } = req.params as any;
+    ChapterSummaries.delete(id);
+    return { ok: true };
   });
 
   app.post('/api/chapter-plans/:id/summarize', async (req, reply) => {
@@ -521,5 +579,35 @@ export async function registerRoutes(app: FastifyInstance) {
     const { id } = req.params as any;
     CharStates.delete(id);
     return { ok: true };
+  });
+
+  // -------- Maintenance --------
+  // Per-table row counts + DB file size for the "数据库维护" panel.
+  app.get('/api/maintenance/stats', async () => Maintenance.stats());
+
+  /** Rebuild the SQLite file to reclaim space freed by DELETEs. */
+  app.post('/api/maintenance/vacuum', async () => {
+    Maintenance.vacuum();
+    return { ok: true, stats: Maintenance.stats() };
+  });
+
+  /**
+   * Prune draft versions globally.
+   * Body: `{ keep?: number }` — defaults to 5. currentVersionId is always kept.
+   */
+  app.post('/api/maintenance/prune-draft-versions', async (req) => {
+    const body = z.object({ keep: z.number().int().min(1).max(100).optional() }).parse(req.body ?? {});
+    const res = Maintenance.pruneAllDraftVersions(body.keep ?? 5);
+    return res;
+  });
+
+  /**
+   * Prune review reports globally.
+   * Body: `{ keep?: number }` — defaults to 3. `keep: 0` wipes all history.
+   */
+  app.post('/api/maintenance/prune-reviews', async (req) => {
+    const body = z.object({ keep: z.number().int().min(0).max(100).optional() }).parse(req.body ?? {});
+    const res = Maintenance.pruneAllReviews(body.keep ?? 3);
+    return res;
   });
 }

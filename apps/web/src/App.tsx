@@ -11,6 +11,7 @@ import { NovelOverviewPage } from './pages/NovelOverviewPage';
 import { ThreadsPage } from './pages/ThreadsPage';
 import { CharacterStatesPage } from './pages/CharacterStatesPage';
 import { ArcSummariesPage } from './pages/ArcSummariesPage';
+import { MaintenancePage } from './pages/MaintenancePage';
 import { TopBar } from './components/TopBar';
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/novels" replace />} />
           <Route path="/novels" element={<NovelsPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
+          <Route path="/maintenance" element={<MaintenancePage />} />
           <Route path="/novels/:novelId/*" element={<NovelLayout />}>
             <Route index element={<NovelOverviewPage />} />
             <Route path="settings" element={<SettingsPage />} />

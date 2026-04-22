@@ -128,9 +128,30 @@ export const api = {
       { method: 'POST', body: JSON.stringify(params) }
     ),
 
+  // draft versions (deletion / pruning)
+  deleteDraftVersion: (versionId: string) =>
+    request<{ ok: true; draftId: string; newCurrentVersionId: string | null }>(
+      `/api/draft-versions/${versionId}`,
+      { method: 'DELETE' }
+    ),
+  pruneDraftVersions: (planId: string, keep = 5) =>
+    request<{ removed: number }>(
+      `/api/chapter-plans/${planId}/draft/prune`,
+      { method: 'POST', body: JSON.stringify({ keep }) }
+    ),
+
   // reviews
   listReviews: (planId: string) =>
     request<ReviewReport[]>(`/api/chapter-plans/${planId}/reviews`),
+  deleteReview: (reviewId: string) =>
+    request<{ ok: true }>(`/api/reviews/${reviewId}`, { method: 'DELETE' }),
+  deleteReviewsForPlan: (planId: string) =>
+    request<{ removed: number }>(`/api/chapter-plans/${planId}/reviews`, { method: 'DELETE' }),
+  pruneReviewsForPlan: (planId: string, keep = 3) =>
+    request<{ removed: number }>(
+      `/api/chapter-plans/${planId}/reviews/prune`,
+      { method: 'POST', body: JSON.stringify({ keep }) }
+    ),
 
   // providers
   listProviders: () => request<ModelProvider[]>('/api/providers'),
@@ -156,6 +177,10 @@ export const api = {
       threadsUpdated: number;
       charactersTouched: number;
     }>(`/api/chapter-plans/${planId}/summarize`, { method: 'POST', body: JSON.stringify(params) }),
+  deleteChapterSummary: (summaryId: string) =>
+    request<{ ok: true }>(`/api/chapter-summaries/${summaryId}`, { method: 'DELETE' }),
+  deleteChapterSummariesForPlan: (planId: string) =>
+    request<{ removed: number }>(`/api/chapter-plans/${planId}/summary`, { method: 'DELETE' }),
 
   // arc summaries
   listArcSummaries: (novelId: string) =>
@@ -200,4 +225,27 @@ export const api = {
     }),
   deleteCharacterState: (id: string) =>
     request<{ ok: true }>(`/api/character-states/${id}`, { method: 'DELETE' }),
+
+  // maintenance
+  maintenanceStats: () =>
+    request<{
+      tables: Record<string, number>;
+      dbSizeBytes: number;
+      draftVersionBytes: number;
+    }>('/api/maintenance/stats'),
+  maintenanceVacuum: () =>
+    request<{
+      ok: true;
+      stats: { tables: Record<string, number>; dbSizeBytes: number; draftVersionBytes: number };
+    }>('/api/maintenance/vacuum', { method: 'POST' }),
+  maintenancePruneDraftVersions: (keep: number) =>
+    request<{ drafts: number; removed: number }>(
+      '/api/maintenance/prune-draft-versions',
+      { method: 'POST', body: JSON.stringify({ keep }) }
+    ),
+  maintenancePruneReviews: (keep: number) =>
+    request<{ plans: number; removed: number }>(
+      '/api/maintenance/prune-reviews',
+      { method: 'POST', body: JSON.stringify({ keep }) }
+    ),
 };
