@@ -7,6 +7,13 @@ export const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+function ensureColumn(table: string, column: string, ddl: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some(c => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}
+
 export function migrate() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS novels (
@@ -63,6 +70,7 @@ export function migrate() {
       max_word_count INTEGER,
       status TEXT DEFAULT 'planned',
       rule_set_json TEXT,
+      context_overrides_json TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
@@ -112,8 +120,84 @@ export function migrate() {
       model TEXT NOT NULL,
       headers_json TEXT,
       is_default INTEGER DEFAULT 0,
+      purpose TEXT NOT NULL DEFAULT 'generation',
+      is_summarizer_default INTEGER DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS chapter_summaries (
+      id TEXT PRIMARY KEY,
+      novel_id TEXT NOT NULL,
+      chapter_plan_id TEXT NOT NULL,
+      draft_version_id TEXT NOT NULL,
+      brief TEXT NOT NULL,
+      key_events_json TEXT,
+      state_changes_json TEXT,
+      open_questions_json TEXT,
+      raw_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE,
+      FOREIGN KEY (chapter_plan_id) REFERENCES chapter_plans(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_chapter_summaries_plan ON chapter_summaries(chapter_plan_id);
+    CREATE INDEX IF NOT EXISTS idx_chapter_summaries_novel ON chapter_summaries(novel_id);
+
+    CREATE TABLE IF NOT EXISTS arc_summaries (
+      id TEXT PRIMARY KEY,
+      novel_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      from_chapter INTEGER,
+      to_chapter INTEGER,
+      chapter_plan_ids_json TEXT,
+      brief TEXT NOT NULL,
+      key_threads_json TEXT,
+      notes TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS narrative_threads (
+      id TEXT PRIMARY KEY,
+      novel_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      label TEXT NOT NULL,
+      detail TEXT,
+      introduced_at_chapter INTEGER,
+      expect_payoff_by_chapter INTEGER,
+      resolved_at_chapter INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      source TEXT NOT NULL DEFAULT 'auto',
+      confidence TEXT NOT NULL DEFAULT 'medium',
+      notes TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_threads_novel_status ON narrative_threads(novel_id, status);
+
+    CREATE TABLE IF NOT EXISTS character_states (
+      id TEXT PRIMARY KEY,
+      novel_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      setting_item_id TEXT,
+      location TEXT,
+      condition TEXT,
+      relations_json TEXT,
+      possessions_json TEXT,
+      notable_flags_json TEXT,
+      last_updated_at_chapter INTEGER,
+      notes TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_char_states_novel_name ON character_states(novel_id, name);
   `);
+
+  ensureColumn('model_providers', 'purpose', "purpose TEXT NOT NULL DEFAULT 'generation'");
+  ensureColumn('model_providers', 'is_summarizer_default', 'is_summarizer_default INTEGER DEFAULT 0');
+  ensureColumn('chapter_plans', 'context_overrides_json', 'context_overrides_json TEXT');
 }

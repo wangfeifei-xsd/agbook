@@ -7,6 +7,9 @@ const NAV = [
   { to: 'settings', label: '设定中心' },
   { to: 'outline', label: '大纲中心' },
   { to: 'plans', label: '章节计划' },
+  { to: 'threads', label: '伏笔台账' },
+  { to: 'characters', label: '角色状态' },
+  { to: 'arcs', label: '卷/弧摘要' },
   { to: 'reviews', label: '审核中心' },
 ];
 

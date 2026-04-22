@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
-import type { GenerateResult, ReviewIssue } from '../types';
+import { ContextOverridesPanel } from '../components/ContextOverridesPanel';
+import { useToast } from '../components/Toast';
+import type { ContextOverrides, GenerateResult, ReviewIssue } from '../types';
 
 const SEVERITY_COLOR: Record<string, string> = {
   info: 'bg-ink-700 text-ink-200',
@@ -11,10 +13,32 @@ const SEVERITY_COLOR: Record<string, string> = {
   critical: 'bg-red-900/70 text-red-200',
 };
 
+const SECTION_LABEL: Record<string, string> = {
+  settings: '相关设定',
+  arcSummaries: '卷/弧摘要',
+  chapterSummaries: '章节摘要',
+  threads: '活跃伏笔',
+  characters: '角色状态',
+};
+
+/** True when any section has been explicitly changed away from auto-default. */
+function hasCustomOverrides(o: ContextOverrides | null | undefined): boolean {
+  if (!o) return false;
+  const keys: (keyof ContextOverrides)[] = [
+    'settings', 'arcSummaries', 'chapterSummaries', 'threads', 'characters',
+  ];
+  for (const k of keys) {
+    const mode = (o as any)[k]?.mode;
+    if (mode && mode !== 'auto') return true;
+  }
+  return false;
+}
+
 export function DraftPage() {
   const { novelId, planId } = useParams();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<'preview' | 'review'>('preview');
+  const toast = useToast();
+  const [tab, setTab] = useState<'preview' | 'review' | 'summary' | 'config'>('preview');
   const [lastResult, setLastResult] = useState<GenerateResult | null>(null);
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
@@ -39,11 +63,76 @@ export function DraftPage() {
     if (!draftData?.current) setContent('');
   }, [draftData?.current?.id]);
 
+  // ----- Context overrides (per-chapter config) -----
+  const [overrides, setOverrides] = useState<ContextOverrides>({});
+  // Hydrate from plan once it loads / when plan changes.
+  useEffect(() => {
+    setOverrides(plan?.contextOverrides ?? {});
+  }, [plan?.id]);
+
+  const overridesKey = useMemo(() => JSON.stringify(overrides), [overrides]);
+
   const { data: preview } = useQuery({
-    queryKey: ['preview', planId, plan?.updatedAt],
-    queryFn: () => api.previewPlan(planId!),
+    queryKey: ['preview', planId, overridesKey],
+    queryFn: () => api.previewPlanWithOverrides(planId!, overrides),
     enabled: !!planId,
+    // keep old preview visible while new one is computing
+    placeholderData: prev => prev,
   });
+
+  // ----- Auto-save of overrides with explicit status -----
+  // dirty  – user changed something, debounce timer is pending
+  // saving – PUT in flight
+  // idle   – last PUT succeeded (or nothing to save)
+  // error  – last PUT failed; user can click "重试" to re-kick
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'dirty' | 'saving' | 'error'>('idle');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const lastSavedRef = useRef<string>('');
+  const saveSeqRef = useRef(0);
+
+  // Re-sync "last saved" marker whenever we switch chapters.
+  useEffect(() => {
+    if (!plan) return;
+    lastSavedRef.current = JSON.stringify(plan.contextOverrides ?? {});
+    setSaveStatus('idle');
+    setLastSavedAt(null);
+    setSaveError(null);
+  }, [plan?.id]);
+
+  const doSave = async (seq: number) => {
+    if (!planId) return;
+    setSaveStatus('saving');
+    try {
+      await api.updatePlan(planId, { contextOverrides: overrides });
+      // Stale request guard: only accept the result of the latest attempt.
+      if (seq !== saveSeqRef.current) return;
+      lastSavedRef.current = overridesKey;
+      setSaveStatus('idle');
+      setLastSavedAt(Date.now());
+      setSaveError(null);
+      qc.invalidateQueries({ queryKey: ['plans', novelId] });
+    } catch (e) {
+      if (seq !== saveSeqRef.current) return;
+      setSaveStatus('error');
+      setSaveError((e as Error).message);
+    }
+  };
+
+  useEffect(() => {
+    if (!planId) return;
+    if (overridesKey === lastSavedRef.current) return;
+    setSaveStatus('dirty');
+    setSaveError(null);
+    const seq = ++saveSeqRef.current;
+    const handle = window.setTimeout(() => { doSave(seq); }, 500);
+    return () => window.clearTimeout(handle);
+  }, [overridesKey, planId]);
+
+  const retrySave = () => {
+    const seq = ++saveSeqRef.current;
+    doSave(seq);
+  };
 
   const { data: reviews = [] } = useQuery({
     queryKey: ['reviews', planId],
@@ -63,6 +152,12 @@ export function DraftPage() {
     }
   }, [providers, providerId]);
 
+  const { data: summaryData, refetch: refetchSummary } = useQuery({
+    queryKey: ['summary', planId],
+    queryFn: () => api.getChapterSummary(planId!),
+    enabled: !!planId,
+  });
+
   const generateMut = useMutation({
     mutationFn: () => api.generatePlan(planId!, { providerId: providerId || undefined }),
     onSuccess: (result) => {
@@ -70,9 +165,22 @@ export function DraftPage() {
       setContent(result.content);
       setDirty(false);
       refetchDraft();
+      refetchSummary();
       qc.invalidateQueries({ queryKey: ['reviews', planId] });
       qc.invalidateQueries({ queryKey: ['plans', novelId] });
+      qc.invalidateQueries({ queryKey: ['threads', novelId] });
+      qc.invalidateQueries({ queryKey: ['characters', novelId] });
       setTab('review');
+      if (result.summary?.ok) {
+        toast.success('章节已生成，摘要/伏笔/角色状态已自动更新');
+      } else if (result.summary && !result.summary.ok) {
+        toast.error(`章节已生成，但摘要失败：${result.summary.message ?? '未知错误'}`);
+      } else {
+        toast.success('章节已生成');
+      }
+    },
+    onError: (e) => {
+      toast.error(`生成失败：${(e as Error).message}`);
     },
   });
 
@@ -82,7 +190,25 @@ export function DraftPage() {
       setDirty(false);
       refetchDraft();
       qc.invalidateQueries({ queryKey: ['plans', novelId] });
+      toast.success('手动修改已保存');
     },
+    onError: (e) => toast.error(`保存失败：${(e as Error).message}`),
+  });
+
+  const summarizeMut = useMutation({
+    mutationFn: () => api.summarizeChapter(planId!),
+    onSuccess: (res) => {
+      refetchSummary();
+      qc.invalidateQueries({ queryKey: ['threads', novelId] });
+      qc.invalidateQueries({ queryKey: ['characters', novelId] });
+      const parts: string[] = [];
+      if (res.threadsCreated) parts.push(`新增伏笔 ${res.threadsCreated}`);
+      if (res.threadsResolved) parts.push(`回收 ${res.threadsResolved}`);
+      if (res.threadsUpdated) parts.push(`更新伏笔 ${res.threadsUpdated}`);
+      if (res.charactersTouched) parts.push(`角色 ${res.charactersTouched}`);
+      toast.success(parts.length ? `摘要已更新 · ${parts.join('，')}` : '摘要已更新');
+    },
+    onError: (e) => toast.error(`摘要失败：${(e as Error).message}`),
   });
 
   const wordCount = useMemo(() => {
@@ -101,13 +227,21 @@ export function DraftPage() {
     <div className="h-full grid grid-cols-[1fr_420px]">
       <div className="flex flex-col min-h-0">
         <div className="px-6 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-900/60">
-          <div>
-            <div className="text-sm text-ink-400">
-              <Link to={`/novels/${novelId}/plans`} className="hover:text-ink-100">章节计划</Link>
-              <span className="mx-2">/</span>
-              <span>第 {plan.chapterNumber} 章</span>
+          <div className="flex items-center gap-3 min-w-0">
+            <Link to={`/novels/${novelId}/plans`}
+              className="btn btn-ghost text-base px-2"
+              title="返回章节计划列表"
+              aria-label="返回">
+              ←
+            </Link>
+            <div className="min-w-0">
+              <div className="text-xs text-ink-400">
+                <Link to={`/novels/${novelId}/plans`} className="hover:text-ink-100">章节计划</Link>
+                <span className="mx-2">/</span>
+                <span>第 {plan.chapterNumber} 章</span>
+              </div>
+              <div className="font-semibold truncate">{plan.title || '（无标题）'}</div>
             </div>
-            <div className="font-semibold">{plan.title || '（无标题）'}</div>
           </div>
           <div className="flex items-center gap-2 text-sm">
             <span className="text-ink-400">{wordCount} 字</span>
@@ -165,17 +299,39 @@ export function DraftPage() {
         </div>
 
         <div className="border-b border-ink-700 flex">
-          <button className={`flex-1 py-2 text-sm ${tab === 'preview' ? 'bg-ink-800 text-brand-500' : 'text-ink-300'}`}
-            onClick={() => setTab('preview')}>上下文注入</button>
-          <button className={`flex-1 py-2 text-sm ${tab === 'review' ? 'bg-ink-800 text-brand-500' : 'text-ink-300'}`}
+          <button className={`flex-1 py-2 text-xs ${tab === 'preview' ? 'bg-ink-800 text-brand-500' : 'text-ink-300'}`}
+            onClick={() => setTab('preview')}>上下文预览</button>
+          <button className={`flex-1 py-2 text-xs ${tab === 'config' ? 'bg-ink-800 text-brand-500' : 'text-ink-300'}`}
+            onClick={() => setTab('config')}>
+            注入配置
+            {hasCustomOverrides(overrides) && <span className="ml-1 text-[10px] text-brand-400">●</span>}
+          </button>
+          <button className={`flex-1 py-2 text-xs ${tab === 'summary' ? 'bg-ink-800 text-brand-500' : 'text-ink-300'}`}
+            onClick={() => setTab('summary')}>
+            本章摘要
+            {summaryData?.summary && <span className="ml-1 text-[10px] text-emerald-400">●</span>}
+          </button>
+          <button className={`flex-1 py-2 text-xs ${tab === 'review' ? 'bg-ink-800 text-brand-500' : 'text-ink-300'}`}
             onClick={() => setTab('review')}>
             审核结果
-            {lastIssues.length > 0 && <span className="ml-1 text-xs text-red-400">· {lastIssues.length}</span>}
+            {lastIssues.length > 0 && <span className="ml-1 text-[10px] text-red-400">· {lastIssues.length}</span>}
           </button>
         </div>
 
         <div className="flex-1 overflow-auto scrollbar-thin p-4 text-sm">
-          {tab === 'preview' ? (
+          {tab === 'config' ? (
+            <ContextOverridesPanel
+              novelId={novelId!}
+              currentPlan={plan}
+              value={overrides}
+              onChange={setOverrides}
+              saveStatus={saveStatus}
+              lastSavedAt={lastSavedAt}
+              saveError={saveError}
+              onRetrySave={retrySave}
+              onResetToAuto={() => setOverrides({})}
+            />
+          ) : tab === 'preview' ? (
             <div className="space-y-3">
               <div>
                 <div className="text-xs text-ink-400 mb-1">规则块（将发送给模型）</div>
@@ -183,12 +339,95 @@ export function DraftPage() {
 {preview?.rules}
                 </pre>
               </div>
-              <div>
-                <div className="text-xs text-ink-400 mb-1">上下文块</div>
-                <pre className="whitespace-pre-wrap text-ink-200 bg-ink-900 rounded p-3 border border-ink-700 text-xs leading-6">
-{preview?.context}
-                </pre>
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-ink-400">上下文块</div>
+                <button className="btn btn-ghost text-[10px] px-2 py-0.5"
+                  onClick={() => setTab('config')}
+                  title="进入注入配置页，按章定制伏笔/角色/摘要等">
+                  自定义注入 →
+                </button>
               </div>
+              <pre className="whitespace-pre-wrap text-ink-200 bg-ink-900 rounded p-3 border border-ink-700 text-xs leading-6">
+{preview?.context}
+              </pre>
+              {preview?.disabled && Object.keys(preview.disabled).some(k => (preview.disabled as any)[k]) && (
+                <div className="text-[11px] text-ink-500">
+                  已关闭：{Object.entries(preview.disabled).filter(([, v]) => v).map(([k]) => SECTION_LABEL[k] ?? k).join('、')}
+                </div>
+              )}
+            </div>
+          ) : tab === 'summary' ? (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-ink-400">
+                  {summaryData?.summary
+                    ? `绑定版本 v${draftData?.versions.find(v => v.id === summaryData.summary!.draftVersionId)?.versionNumber ?? '?'} · ${new Date(summaryData.summary.updatedAt).toLocaleString()}`
+                    : '当前章节尚无摘要'}
+                </div>
+                <button className="btn btn-ghost text-xs"
+                  disabled={!draftData?.current || summarizeMut.isPending}
+                  onClick={() => summarizeMut.mutate()}>
+                  {summarizeMut.isPending ? '总结中…' : (summaryData?.summary ? '重新总结' : '生成本章摘要')}
+                </button>
+              </div>
+              {!draftData?.current && (
+                <div className="text-ink-500">当前章节没有已保存的正文版本，无法生成摘要。</div>
+              )}
+              {summaryData?.summary ? (
+                <>
+                  <div>
+                    <div className="text-xs text-ink-400 mb-1">brief</div>
+                    <div className="bg-ink-900 border border-ink-700 rounded p-3 leading-6">
+                      {summaryData.summary.brief}
+                    </div>
+                  </div>
+                  {summaryData.summary.keyEvents.length > 0 && (
+                    <div>
+                      <div className="text-xs text-ink-400 mb-1">key events</div>
+                      <ul className="space-y-1">
+                        {summaryData.summary.keyEvents.map((ev, idx) => (
+                          <li key={idx} className="bg-ink-900 border border-ink-700 rounded p-2">
+                            {ev.who && <span className="text-brand-400 mr-1">{ev.who}：</span>}
+                            <span>{ev.what}</span>
+                            {(ev.where || ev.when) && (
+                              <span className="ml-2 text-xs text-ink-500">
+                                {ev.where ? `@${ev.where} ` : ''}{ev.when ?? ''}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {summaryData.summary.stateChanges.length > 0 && (
+                    <div>
+                      <div className="text-xs text-ink-400 mb-1">state changes</div>
+                      <ul className="space-y-1 text-xs">
+                        {summaryData.summary.stateChanges.map((sc, idx) => (
+                          <li key={idx} className="text-ink-200">
+                            <span className="text-ink-400">{sc.target}：</span>{sc.change}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {summaryData.summary.openQuestions.length > 0 && (
+                    <div>
+                      <div className="text-xs text-ink-400 mb-1">open questions</div>
+                      <ul className="space-y-1 text-xs list-disc list-inside text-ink-200">
+                        {summaryData.summary.openQuestions.map((q, idx) => (
+                          <li key={idx}>{q}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              ) : null}
+              {summarizeMut.isError && (
+                <div className="text-xs text-red-400">
+                  {(summarizeMut.error as Error)?.message}
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-3">

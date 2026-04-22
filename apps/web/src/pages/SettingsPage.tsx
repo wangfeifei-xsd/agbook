@@ -26,9 +26,16 @@ export function SettingsPage() {
 
   const [activeType, setActiveType] = useState<SettingType>('character');
   const [editing, setEditing] = useState<SettingItem | null>(null);
+  const [showForm, setShowForm] = useState(false);
 
   const defaultForm = () => ({ type: activeType, name: '', summary: '', content: '', tagsText: '' });
   const [form, setForm] = useState(defaultForm());
+
+  const closeForm = () => {
+    setShowForm(false);
+    setEditing(null);
+    setForm(defaultForm());
+  };
 
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -44,8 +51,7 @@ export function SettingsPage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['settings', novelId] });
-      setEditing(null);
-      setForm(defaultForm());
+      closeForm();
     },
   });
 
@@ -62,10 +68,12 @@ export function SettingsPage() {
       type: item.type, name: item.name, summary: item.summary ?? '',
       content: item.content ?? '', tagsText: (item.tags ?? []).join(', '),
     });
+    setShowForm(true);
   };
   const startCreate = () => {
     setEditing(null);
     setForm({ ...defaultForm(), type: activeType });
+    setShowForm(true);
   };
 
   return (
@@ -76,7 +84,7 @@ export function SettingsPage() {
           const count = items.filter(i => i.type === t.value).length;
           return (
             <button key={t.value}
-              onClick={() => { setActiveType(t.value); startCreate(); }}
+              onClick={() => { setActiveType(t.value); closeForm(); }}
               className={`w-full text-left px-4 py-2 text-sm flex items-center justify-between
                 ${activeType === t.value ? 'bg-ink-800 text-brand-500' : 'text-ink-300 hover:bg-ink-800'}`}>
               <span>{t.label}</span>
@@ -86,8 +94,8 @@ export function SettingsPage() {
         })}
       </div>
 
-      <div className="flex-1 min-w-0 grid grid-cols-2">
-        <div className="border-r border-ink-700 overflow-auto scrollbar-thin p-4">
+      <div className={`flex-1 min-w-0 grid ${showForm ? 'grid-cols-2' : 'grid-cols-1'}`}>
+        <div className={`overflow-auto scrollbar-thin p-4 ${showForm ? 'border-r border-ink-700' : ''}`}>
           <div className="flex justify-between items-center mb-3">
             <h3 className="font-semibold">{TYPES.find(t => t.value === activeType)?.label}列表</h3>
             <button className="btn btn-ghost" onClick={startCreate}>新建</button>
@@ -114,6 +122,7 @@ export function SettingsPage() {
           )}
         </div>
 
+        {showForm && (
         <div className="overflow-auto scrollbar-thin p-6">
           <h3 className="font-semibold mb-4">{editing ? '编辑条目' : '新建条目'}</h3>
           <div className="space-y-3">
@@ -144,11 +153,7 @@ export function SettingsPage() {
                 onChange={e => setForm({ ...form, tagsText: e.target.value })} />
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              {editing && (
-                <button className="btn btn-ghost" onClick={() => { setEditing(null); setForm(defaultForm()); }}>
-                  取消
-                </button>
-              )}
+              <button className="btn btn-ghost" onClick={closeForm}>取消</button>
               <button className="btn btn-primary" disabled={!form.name.trim() || saveMut.isPending}
                 onClick={() => saveMut.mutate()}>
                 {saveMut.isPending ? '保存中…' : '保存'}
@@ -156,6 +161,7 @@ export function SettingsPage() {
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   );

@@ -12,6 +12,18 @@ export interface ChatInput {
   temperature?: number;
   maxTokens?: number;
   model?: string;
+  /** ms, client-side cap. Default 300_000 (5 min). */
+  timeoutMs?: number;
+  /** Extra retry attempts on 408/425/429/5xx/network errors. Default 2 (= up to 3 tries). */
+  maxRetries?: number;
+  /** Initial backoff in ms; each attempt doubles it. Default 1500. */
+  retryBaseMs?: number;
+}
+
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function buildUrl(baseUrl: string, pathSuffix: string) {
@@ -39,35 +51,95 @@ function buildHeaders(provider: ModelProvider) {
 }
 
 export async function chatCompletion(input: ChatInput): Promise<string> {
-  const { provider, messages, temperature = 0.8, maxTokens, model } = input;
+  const {
+    provider,
+    messages,
+    temperature = 0.8,
+    maxTokens,
+    model,
+    timeoutMs = 300_000,
+    maxRetries = 2,
+    retryBaseMs = 1500,
+  } = input;
+
   const url = buildUrl(provider.baseUrl, '/chat/completions');
-  const body = {
+  const body = JSON.stringify({
     model: model || provider.model,
     messages,
     temperature,
     ...(maxTokens ? { max_tokens: maxTokens } : {}),
     stream: false,
-  };
-  const res = await request(url, {
-    method: 'POST',
-    headers: buildHeaders(provider),
-    body: JSON.stringify(body),
   });
-  const text = await res.body.text();
-  if (res.statusCode >= 400) {
-    throw new Error(`Model API error ${res.statusCode}: ${text.slice(0, 800)}`);
-  }
-  try {
-    const json = JSON.parse(text);
-    const choice = json.choices?.[0];
-    const content = choice?.message?.content;
-    if (typeof content !== 'string') {
-      throw new Error(`Unexpected response shape: ${text.slice(0, 400)}`);
+  const headers = buildHeaders(provider);
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await request(url, {
+        method: 'POST',
+        headers,
+        body,
+        headersTimeout: timeoutMs,
+        bodyTimeout: timeoutMs,
+      });
+      const text = await res.body.text();
+
+      if (res.statusCode >= 400) {
+        const err = new Error(`Model API error ${res.statusCode}: ${text.slice(0, 800)}`);
+        (err as any).statusCode = res.statusCode;
+        if (RETRYABLE_STATUS.has(res.statusCode) && attempt < maxRetries) {
+          lastError = err;
+          const wait = retryBaseMs * Math.pow(2, attempt);
+          console.warn(
+            `[chatCompletion] HTTP ${res.statusCode}, retry ${attempt + 1}/${maxRetries} in ${wait}ms`
+          );
+          await sleep(wait);
+          continue;
+        }
+        throw err;
+      }
+
+      try {
+        const json = JSON.parse(text);
+        const choice = json.choices?.[0];
+        const content = choice?.message?.content;
+        if (typeof content !== 'string') {
+          throw new Error(`Unexpected response shape: ${text.slice(0, 400)}`);
+        }
+        return content;
+      } catch (e: any) {
+        throw new Error(`Failed to parse model response: ${e?.message || e}`);
+      }
+    } catch (e: any) {
+      // Retry on network-level failures (reset, timeout, DNS blip, etc.)
+      const statusCode = e?.statusCode;
+      const code: string | undefined = e?.code || e?.cause?.code;
+      const isNetwork =
+        !statusCode &&
+        (code === 'UND_ERR_HEADERS_TIMEOUT' ||
+          code === 'UND_ERR_BODY_TIMEOUT' ||
+          code === 'UND_ERR_CONNECT_TIMEOUT' ||
+          code === 'UND_ERR_SOCKET' ||
+          code === 'ECONNRESET' ||
+          code === 'ECONNREFUSED' ||
+          code === 'ETIMEDOUT' ||
+          code === 'EAI_AGAIN');
+
+      if (isNetwork && attempt < maxRetries) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        const wait = retryBaseMs * Math.pow(2, attempt);
+        console.warn(
+          `[chatCompletion] network error ${code || e?.message}, retry ${attempt + 1}/${maxRetries} in ${wait}ms`
+        );
+        await sleep(wait);
+        continue;
+      }
+      throw e;
     }
-    return content;
-  } catch (e: any) {
-    throw new Error(`Failed to parse model response: ${e?.message || e}`);
   }
+
+  throw lastError ?? new Error('chatCompletion exhausted retries');
 }
 
 export async function testConnection(provider: ModelProvider): Promise<{ ok: boolean; message: string }> {

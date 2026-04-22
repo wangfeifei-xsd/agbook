@@ -1,6 +1,8 @@
 import type {
-  ChapterPlan, ChapterRuleSet, DraftVersion, GenerateResult, ModelProvider,
-  Novel, OutlineNode, ReviewReport, SettingItem, SettingType, OutlineLevel,
+  ArcSummary, ChapterPlan, ChapterRuleSet, ChapterSummary, CharacterState,
+  ContextOverrides, DraftVersion, GenerateResult, ModelProvider,
+  NarrativeThread, Novel, OutlineLevel, OutlineNode, ReviewReport,
+  SettingItem, SettingType, ThreadStatus,
 } from './types';
 
 // When the frontend runs inside the packaged Tauri app the page is served
@@ -91,9 +93,30 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ content }) }
     ),
   previewPlan: (planId: string) =>
-    request<{ context: string; rules: string; resolvedRules: ChapterRuleSet }>(
-      `/api/chapter-plans/${planId}/preview`
-    ),
+    request<{
+      context: string;
+      rules: string;
+      resolvedRules: ChapterRuleSet;
+      disabled?: Record<string, boolean>;
+    }>(`/api/chapter-plans/${planId}/preview`),
+  /**
+   * Preview the context with transient overrides (not yet persisted).
+   * Pass `overrides: null` to preview with no overrides (i.e. fully auto).
+   * Pass `overrides: undefined` to use whatever is already saved on the plan.
+   */
+  previewPlanWithOverrides: (
+    planId: string,
+    overrides: ContextOverrides | null | undefined
+  ) =>
+    request<{
+      context: string;
+      rules: string;
+      resolvedRules: ChapterRuleSet;
+      disabled?: Record<string, boolean>;
+    }>(`/api/chapter-plans/${planId}/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ contextOverrides: overrides ?? null }),
+    }),
   generatePlan: (planId: string, params: { providerId?: string; temperature?: number } = {}) =>
     request<GenerateResult>(
       `/api/chapter-plans/${planId}/generate`,
@@ -114,4 +137,62 @@ export const api = {
     request<{ ok: true }>(`/api/providers/${id}`, { method: 'DELETE' }),
   testProvider: (id: string) =>
     request<{ ok: boolean; message: string }>(`/api/providers/${id}/test`, { method: 'POST' }),
+
+  // chapter summaries
+  listChapterSummaries: (novelId: string) =>
+    request<ChapterSummary[]>(`/api/novels/${novelId}/chapter-summaries`),
+  getChapterSummary: (planId: string) =>
+    request<{ summary: ChapterSummary | null }>(`/api/chapter-plans/${planId}/summary`),
+  summarizeChapter: (planId: string, params: { providerId?: string | null; versionId?: string } = {}) =>
+    request<{
+      summary: ChapterSummary;
+      threadsCreated: number;
+      threadsResolved: number;
+      threadsUpdated: number;
+      charactersTouched: number;
+    }>(`/api/chapter-plans/${planId}/summarize`, { method: 'POST', body: JSON.stringify(params) }),
+
+  // arc summaries
+  listArcSummaries: (novelId: string) =>
+    request<ArcSummary[]>(`/api/novels/${novelId}/arc-summaries`),
+  createArcSummary: (novelId: string, data: {
+    title: string;
+    chapterPlanIds: string[];
+    notes?: string | null;
+    providerId?: string | null;
+  }) => request<ArcSummary>(`/api/novels/${novelId}/arc-summaries`, {
+    method: 'POST', body: JSON.stringify(data),
+  }),
+  updateArcSummary: (id: string, data: Partial<Pick<ArcSummary, 'title' | 'brief' | 'keyThreads' | 'notes'>>) =>
+    request<ArcSummary>(`/api/arc-summaries/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteArcSummary: (id: string) =>
+    request<{ ok: true }>(`/api/arc-summaries/${id}`, { method: 'DELETE' }),
+
+  // narrative threads
+  listThreads: (novelId: string, status?: ThreadStatus) =>
+    request<NarrativeThread[]>(
+      `/api/novels/${novelId}/threads${status ? `?status=${status}` : ''}`
+    ),
+  createThread: (novelId: string, data: Partial<NarrativeThread>) =>
+    request<NarrativeThread>(`/api/novels/${novelId}/threads`, {
+      method: 'POST', body: JSON.stringify(data),
+    }),
+  updateThread: (id: string, data: Partial<NarrativeThread>) =>
+    request<NarrativeThread>(`/api/threads/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteThread: (id: string) =>
+    request<{ ok: true }>(`/api/threads/${id}`, { method: 'DELETE' }),
+
+  // character states
+  listCharacterStates: (novelId: string) =>
+    request<CharacterState[]>(`/api/novels/${novelId}/character-states`),
+  upsertCharacterState: (novelId: string, data: Partial<CharacterState>) =>
+    request<CharacterState>(`/api/novels/${novelId}/character-states`, {
+      method: 'POST', body: JSON.stringify(data),
+    }),
+  updateCharacterState: (id: string, data: Partial<CharacterState>) =>
+    request<CharacterState>(`/api/character-states/${id}`, {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
+  deleteCharacterState: (id: string) =>
+    request<{ ok: true }>(`/api/character-states/${id}`, { method: 'DELETE' }),
 };

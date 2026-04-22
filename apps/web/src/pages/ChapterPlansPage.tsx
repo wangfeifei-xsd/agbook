@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
+import { useToast } from '../components/Toast';
 import type { ChapterPlan, ChapterRuleSet } from '../types';
 
 const STATUS_LABEL: Record<ChapterPlan['status'], string> = {
@@ -116,10 +117,12 @@ async function updatePlan(qc: any, novelId: string, id: string, data: Partial<Ch
 function PlanEditor({ plan, outlineOptions, onSave, onDelete }: {
   plan: ChapterPlan;
   outlineOptions: { id: string; title: string; level: string }[];
-  onSave: (data: Partial<ChapterPlan>) => void;
+  onSave: (data: Partial<ChapterPlan>) => Promise<void> | void;
   onDelete: () => void;
 }) {
   const { novelId } = useParams();
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     chapterNumber: plan.chapterNumber,
     title: plan.title ?? '',
@@ -134,23 +137,32 @@ function PlanEditor({ plan, outlineOptions, onSave, onDelete }: {
   const [mustIncludeText, setMustIncludeText] = useState((plan.ruleSet.mustIncludePoints ?? []).join('\n'));
   const [mustAvoidText, setMustAvoidText] = useState((plan.ruleSet.mustAvoidPoints ?? []).join('\n'));
 
-  const save = () => {
+  const save = async () => {
+    if (saving) return;
     const rules: ChapterRuleSet = {
       ...rule,
       mustIncludePoints: mustIncludeText.split('\n').map(s => s.trim()).filter(Boolean),
       mustAvoidPoints: mustAvoidText.split('\n').map(s => s.trim()).filter(Boolean),
     };
-    onSave({
-      chapterNumber: Number(form.chapterNumber),
-      title: form.title,
-      summary: form.summary,
-      goal: form.goal,
-      outlineNodeId: form.outlineNodeId || null,
-      targetWordCount: form.targetWordCount === '' ? null : Number(form.targetWordCount),
-      minWordCount: form.minWordCount === '' ? null : Number(form.minWordCount),
-      maxWordCount: form.maxWordCount === '' ? null : Number(form.maxWordCount),
-      ruleSet: rules,
-    });
+    setSaving(true);
+    try {
+      await onSave({
+        chapterNumber: Number(form.chapterNumber),
+        title: form.title,
+        summary: form.summary,
+        goal: form.goal,
+        outlineNodeId: form.outlineNodeId || null,
+        targetWordCount: form.targetWordCount === '' ? null : Number(form.targetWordCount),
+        minWordCount: form.minWordCount === '' ? null : Number(form.minWordCount),
+        maxWordCount: form.maxWordCount === '' ? null : Number(form.maxWordCount),
+        ruleSet: rules,
+      });
+      toast.success('章节计划已保存');
+    } catch (err: any) {
+      toast.error(`保存失败：${err?.message ?? '未知错误'}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -285,7 +297,9 @@ function PlanEditor({ plan, outlineOptions, onSave, onDelete }: {
       </div>
 
       <div className="mt-6 flex justify-end">
-        <button className="btn btn-primary" onClick={save}>保存章节计划</button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? '保存中…' : '保存章节计划'}
+        </button>
       </div>
     </div>
   );

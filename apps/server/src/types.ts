@@ -64,6 +64,36 @@ export interface ChapterRuleSet {
   extraInstructions?: string;
 }
 
+export type ContextSectionMode = 'auto' | 'manual' | 'off';
+
+/**
+ * Per-chapter overrides for the context assembled by workflow/context.ts.
+ * Each block can be auto (use default heuristic), manual (use the supplied IDs
+ * only), or off (skip entirely). novelInfo / outline are always on.
+ */
+export interface ContextOverrides {
+  settings?: { mode: 'auto' | 'off' };
+  arcSummaries?: {
+    mode: ContextSectionMode;
+    arcIds?: string[];
+  };
+  chapterSummaries?: {
+    mode: ContextSectionMode;
+    planIds?: string[];
+    /** Whether to include the trailing raw text of the latest chapter; default true for auto. */
+    includeTail?: boolean;
+  };
+  threads?: {
+    mode: ContextSectionMode;
+    threadIds?: string[];
+    /** When auto, whether to also include resolved threads explicitly pinned by threadIds. Optional. */
+  };
+  characters?: {
+    mode: ContextSectionMode;
+    stateIds?: string[];
+  };
+}
+
 export interface ChapterPlan {
   id: string;
   novelId: string;
@@ -77,6 +107,7 @@ export interface ChapterPlan {
   maxWordCount?: number | null;
   status: 'planned' | 'generating' | 'drafted' | 'reviewing' | 'finalized';
   ruleSet: ChapterRuleSet;
+  contextOverrides?: ContextOverrides | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -126,6 +157,8 @@ export interface ReviewReport {
   createdAt: number;
 }
 
+export type ProviderPurpose = 'generation' | 'summarizer';
+
 export interface ModelProvider {
   id: string;
   name: string;
@@ -134,6 +167,91 @@ export interface ModelProvider {
   model: string;
   headers?: Record<string, string>;
   isDefault: boolean;
+  isSummarizerDefault: boolean;
+  purpose: ProviderPurpose;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ChapterSummaryEvent {
+  who?: string;
+  what: string;
+  where?: string;
+  when?: string;
+}
+
+export interface ChapterSummaryStateChange {
+  target: string;
+  change: string;
+}
+
+export interface ChapterSummary {
+  id: string;
+  novelId: string;
+  chapterPlanId: string;
+  draftVersionId: string;
+  brief: string;
+  keyEvents: ChapterSummaryEvent[];
+  stateChanges: ChapterSummaryStateChange[];
+  openQuestions: string[];
+  raw?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ArcSummary {
+  id: string;
+  novelId: string;
+  title: string;
+  fromChapter?: number | null;
+  toChapter?: number | null;
+  chapterPlanIds: string[];
+  brief: string;
+  keyThreads: string[];
+  notes?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type ThreadKind = 'foreshadow' | 'subplot' | 'promise' | 'mystery';
+export type ThreadStatus = 'active' | 'resolved' | 'abandoned';
+export type ThreadSource = 'auto' | 'manual';
+export type ThreadConfidence = 'low' | 'medium' | 'high';
+
+export interface NarrativeThread {
+  id: string;
+  novelId: string;
+  kind: ThreadKind;
+  label: string;
+  detail?: string | null;
+  introducedAtChapter?: number | null;
+  expectPayoffByChapter?: number | null;
+  resolvedAtChapter?: number | null;
+  status: ThreadStatus;
+  source: ThreadSource;
+  confidence: ThreadConfidence;
+  notes?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CharacterRelation {
+  target: string;
+  relation: string;
+}
+
+export interface CharacterState {
+  id: string;
+  novelId: string;
+  name: string;
+  settingItemId?: string | null;
+  location?: string | null;
+  condition?: string | null;
+  relations: CharacterRelation[];
+  possessions: string[];
+  notableFlags: string[];
+  lastUpdatedAtChapter?: number | null;
+  notes?: string | null;
   createdAt: number;
   updatedAt: number;
 }

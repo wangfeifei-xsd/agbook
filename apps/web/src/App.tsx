@@ -8,6 +8,9 @@ import { ChapterPlansPage } from './pages/ChapterPlansPage';
 import { DraftPage } from './pages/DraftPage';
 import { ReviewsPage } from './pages/ReviewsPage';
 import { NovelOverviewPage } from './pages/NovelOverviewPage';
+import { ThreadsPage } from './pages/ThreadsPage';
+import { CharacterStatesPage } from './pages/CharacterStatesPage';
+import { ArcSummariesPage } from './pages/ArcSummariesPage';
 import { TopBar } from './components/TopBar';
 
 export default function App() {
@@ -25,6 +28,9 @@ export default function App() {
             <Route path="outline" element={<OutlinePage />} />
             <Route path="plans" element={<ChapterPlansPage />} />
             <Route path="plans/:planId" element={<DraftPage />} />
+            <Route path="threads" element={<ThreadsPage />} />
+            <Route path="characters" element={<CharacterStatesPage />} />
+            <Route path="arcs" element={<ArcSummariesPage />} />
             <Route path="reviews" element={<ReviewsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/novels" replace />} />

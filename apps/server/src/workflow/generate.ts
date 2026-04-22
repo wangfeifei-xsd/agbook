@@ -3,6 +3,7 @@ import { ChapterPlans, Drafts, Novels, Providers, Reviews } from '../repo.js';
 import type { ReviewIssue } from '../types.js';
 import { buildChapterContext, renderContextForPrompt } from './context.js';
 import { renderRulesForPrompt, resolveChapterRules, validateRules, countChineseWords } from './rules.js';
+import { summarizeChapter } from './summarize.js';
 
 export interface GenerateChapterResult {
   draftId: string;
@@ -13,6 +14,10 @@ export interface GenerateChapterResult {
     id: string;
     result: 'pass' | 'warn' | 'fail';
     issues: ReviewIssue[];
+  };
+  summary?: {
+    ok: boolean;
+    message?: string;
   };
 }
 
@@ -30,7 +35,7 @@ export async function generateChapter(chapterPlanId: string, options?: {
     : Providers.getDefault();
   if (!provider) throw new Error('未配置模型服务，请先在「模型配置」中添加一个 Provider。');
 
-  const ctx = buildChapterContext(novel, plan);
+  const ctx = buildChapterContext(novel, plan, plan.contextOverrides);
   const rules = resolveChapterRules(novel, plan);
 
   const contextBlock = renderContextForPrompt(ctx);
@@ -100,6 +105,21 @@ export async function generateChapter(chapterPlanId: string, options?: {
 
   ChapterPlans.update(plan.id, { status: result === 'fail' ? 'reviewing' : 'drafted' });
 
+  let summaryMeta: GenerateChapterResult['summary'];
+  try {
+    await summarizeChapter(plan.id, { versionId: version.id });
+    summaryMeta = { ok: true };
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    summaryMeta = { ok: false, message: msg };
+    // Intentionally non-fatal: keep the draft, surface a note for the UI/log.
+    try {
+      (globalThis as any).console?.warn?.(
+        `[summarize] chapter ${plan.id} failed: ${msg}`
+      );
+    } catch { /* ignore */ }
+  }
+
   return {
     draftId: draft.id,
     versionId: version.id,
@@ -110,6 +130,7 @@ export async function generateChapter(chapterPlanId: string, options?: {
       result,
       issues,
     },
+    summary: summaryMeta,
   };
 }
 

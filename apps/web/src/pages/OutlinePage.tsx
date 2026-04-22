@@ -47,6 +47,22 @@ export function OutlinePage() {
   const [selected, setSelected] = useState<OutlineNode | null>(null);
   const [form, setForm] = useState({ level: 'chapter' as OutlineLevel, title: '', summary: '', goal: '' });
   const [parentId, setParentId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const openCreateTopLevel = () => {
+    setParentId(null);
+    setForm({ level: 'chapter', title: '', summary: '', goal: '' });
+    setShowCreate(true);
+  };
+  const openCreateChild = (parentNode: OutlineNode) => {
+    setParentId(parentNode.id);
+    setForm({ level: 'scene', title: '', summary: '', goal: '' });
+    setShowCreate(true);
+  };
+  const closeCreate = () => {
+    setShowCreate(false);
+    setForm({ level: 'chapter', title: '', summary: '', goal: '' });
+  };
 
   const createMut = useMutation({
     mutationFn: () => api.createOutline(novelId!, {
@@ -56,7 +72,7 @@ export function OutlinePage() {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['outline', novelId] });
-      setForm({ level: 'chapter', title: '', summary: '', goal: '' });
+      closeCreate();
     },
   });
 
@@ -93,11 +109,11 @@ export function OutlinePage() {
   );
 
   return (
-    <div className="h-full grid grid-cols-[280px_1fr_360px]">
+    <div className={`h-full grid ${showCreate ? 'grid-cols-[280px_1fr_360px]' : 'grid-cols-[280px_1fr]'}`}>
       <div className="border-r border-ink-700 overflow-auto scrollbar-thin p-3 bg-ink-900/40">
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-semibold">大纲树</h3>
-          <button className="btn btn-ghost text-xs" onClick={() => { setSelected(null); setParentId(null); }}>
+          <button className="btn btn-ghost text-xs" onClick={openCreateTopLevel}>
             新建顶级
           </button>
         </div>
@@ -111,15 +127,19 @@ export function OutlinePage() {
           <EditPanel node={selected}
             onSave={data => updateMut.mutate(data)}
             onDelete={() => { if (confirm(`删除「${selected.title}」？（含所有子节点）`)) deleteMut.mutate(selected.id); }}
-            onCreateChild={() => { setParentId(selected.id); setForm({ level: 'scene', title: '', summary: '', goal: '' }); }}
+            onCreateChild={() => openCreateChild(selected)}
           />
         ) : (
-          <div className="text-ink-500 text-sm">请选择左侧节点进行查看 / 编辑；或在右侧创建新节点。</div>
+          <div className="text-ink-500 text-sm">请选择左侧节点进行查看 / 编辑；或点左上"新建顶级"添加根节点。</div>
         )}
       </div>
 
+      {showCreate && (
       <div className="border-l border-ink-700 overflow-auto scrollbar-thin p-5 bg-ink-900/40">
-        <h3 className="font-semibold mb-3">新建节点</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold">新建节点</h3>
+          <button className="btn btn-ghost text-xs" onClick={closeCreate}>关闭</button>
+        </div>
         <div className="space-y-3">
           <div>
             <label className="label">级别</label>
@@ -155,6 +175,7 @@ export function OutlinePage() {
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }

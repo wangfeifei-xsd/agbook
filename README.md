@@ -150,6 +150,41 @@ const spawnOpts = { stdio: 'inherit', shell: process.platform === 'win32' };
 
 Tauri v2 的 webview 原点是 `tauri://localhost`（macOS/Linux）或 `http://tauri.localhost`（Windows），跟 sidecar 的 `127.0.0.1:8787` 不同源。`apps/web/src/api.ts` 里根据 `window.location.protocol` 自动补绝对地址，本地浏览器 dev 下继续走 Vite 代理不变。
 
+### 5. `dev:desktop` 父进程退出后 tsx / vite 子进程会变僵尸
+
+`npm run dev:desktop` 底下是 `npm-run-all -p dev:server dev:web desktop:wait` 并行拉三个子任务，其中一个失败或你在 IDE 里直接结束 Run 窗口时，父进程退了但 `tsx watch`（8787）和 `vite`（5173）经常会孤儿化继续驻留。表现为：
+
+- 新加的后端路由一直 `404`（老 server 进程没重启，跑的还是旧代码）
+- 端口被占，重启 `dev:desktop` 报 `EADDRINUSE`
+- 改代码没热更新
+
+#### 排查速查
+
+```bash
+# 1) 看端口上是哪个 PID，以及进程跑了多久
+lsof -i :8787 -sTCP:LISTEN
+lsof -i :5173 -sTCP:LISTEN
+ps -o pid,etime,command -p <pid>
+```
+
+`etime` 明显比当前这次 `dev:desktop` 启动时间长的，就是僵尸。
+
+#### 重启流程
+
+```bash
+# 2) 清理老进程（两个端口都清）
+lsof -ti :8787 | xargs kill 2>/dev/null
+lsof -ti :5173 | xargs kill 2>/dev/null
+
+# 3) 如果是 better-sqlite3 报 NODE_MODULE_VERSION 不匹配（宿主 Node 升级过），顺手重建
+npm rebuild better-sqlite3
+
+# 4) 重新起桌面开发
+npm run dev:desktop
+```
+
+等 server 日志出现 `agbook server ready at http://127.0.0.1:8787` 再刷页面。
+
 ## 更换应用图标
 
 1. 准备一张 1024×1024 的方形 PNG（建议透明背景，macOS 会自动加圆角，**不要自己画圆角**）
