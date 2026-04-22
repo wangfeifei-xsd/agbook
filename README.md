@@ -100,6 +100,25 @@ apps/desktop/src-tauri/target/release/bundle/
   └── nsis/agbook_<ver>_<arch>.exe      # Windows NSIS 安装程序
 ```
 
+### macOS 首次打开被拦截（"已损坏，无法打开"）
+
+未签名/未公证版本在 macOS 上可能被 Gatekeeper 拦截。按下面步骤处理：
+
+1. 先把 `agbook.app` 拖到 `Applications`（应用程序）目录
+2. 去掉隔离标记：
+   ```bash
+   sudo xattr -rd com.apple.quarantine "/Applications/agbook.app"
+   ```
+3. 再清一次扩展属性（可选，但更稳）：
+   ```bash
+   sudo xattr -cr "/Applications/agbook.app"
+   ```
+4. 在 Finder 里右键 `agbook.app` -> `打开` -> 再确认一次
+5. 若仍报错，再执行：
+   ```bash
+   open "/Applications/agbook.app"
+   ```
+
 ### 运行时行为
 
 - Tauri 启动时在 OS 的应用数据目录（macOS：`~/Library/Application Support/com.agbook.app/`，Windows：`%APPDATA%\com.agbook.app\`）下初始化 SQLite
