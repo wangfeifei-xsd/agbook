@@ -79,23 +79,30 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       {children}
       {pending && (
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
           role="dialog"
           aria-modal="true"
           onClick={(e) => {
             if (e.target === e.currentTarget) close(false);
           }}
         >
-          <div className="w-[420px] max-w-[90vw] rounded-lg border border-ink-700 bg-ink-900 shadow-2xl">
-            <div className="px-5 pt-4 pb-2">
+          {/*
+            Flex column with `max-h-[90vh]` clamps the dialog inside the
+            viewport; the body gets `flex-1 min-h-0 overflow-auto` so any
+            long preview text scrolls inside instead of pushing the header /
+            footer off-screen (was causing top=-103px, h=1120px). Header &
+            footer stay sticky-looking because they are siblings, not parent.
+          */}
+          <div className="w-[480px] max-w-[90vw] max-h-[90vh] flex flex-col rounded-lg border border-ink-700 bg-ink-900 shadow-2xl">
+            <div className="px-5 pt-4 pb-2 shrink-0">
               <div className="text-base font-semibold text-ink-100">
                 {pending.opts.title ?? '请确认'}
               </div>
             </div>
-            <div className="px-5 pb-4 text-sm text-ink-200 whitespace-pre-wrap leading-6">
+            <div className="px-5 pb-4 text-sm text-ink-200 whitespace-pre-wrap break-words leading-6 flex-1 min-h-0 overflow-auto scrollbar-thin">
               {pending.opts.message}
             </div>
-            <div className="px-5 py-3 border-t border-ink-700 flex justify-end gap-2 bg-ink-900/80 rounded-b-lg">
+            <div className="px-5 py-3 border-t border-ink-700 flex justify-end gap-2 bg-ink-900/80 rounded-b-lg shrink-0">
               <button
                 type="button"
                 className="btn btn-ghost"

@@ -19,6 +19,8 @@ import { generateChapter } from './workflow/generate.js';
 import { buildChapterContext, renderContextForPrompt } from './workflow/context.js';
 import { renderRulesForPrompt, resolveChapterRules } from './workflow/rules.js';
 import { summarizeArc, summarizeChapter } from './workflow/summarize.js';
+import { polishText, type PolishPurpose } from './workflow/polish.js';
+import { suggestChapterTitle } from './workflow/titleSuggest.js';
 
 const NovelInput = z.object({
   title: z.string().min(1),
@@ -172,6 +174,55 @@ export async function registerRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  /**
+   * AI 润色：把给定的小说级自由文本（简介 / 文风 / 禁区）交给模型做风格优化。
+   * 不会写回数据库，由前端自行决定是否用返回值覆盖表单。
+   */
+  app.post('/api/novels/:id/polish', async (req, reply) => {
+    const { id } = req.params as any;
+    const body = z.object({
+      text: z.string().min(1, '文本不能为空'),
+      purpose: z.enum([
+        'summary',
+        'styleGuide',
+        'forbiddenRules',
+        'settingSummary',
+        'settingContent',
+        'outlineSummary',
+        'outlineGoal',
+        'chapterMustInclude',
+        'chapterMustAvoid',
+        'chapterContinuity',
+        'chapterExtraInstructions',
+      ]),
+      providerId: z.string().optional().nullable(),
+      /**
+       * Optional extra context from the caller (e.g. which setting entry
+       * is being polished). Gets appended to the novel-level hint so the
+       * model knows exactly which entity it is working on.
+       */
+      hint: z.string().max(500).optional().nullable(),
+    }).parse(req.body ?? {});
+    const novel = Novels.get(id);
+    if (!novel) return reply.code(404).send({ error: 'novel not found' });
+    const hintParts: string[] = [];
+    if (novel.title) hintParts.push(`小说：${novel.title}`);
+    if (novel.genre) hintParts.push(`题材：${novel.genre}`);
+    if (body.hint && body.hint.trim()) hintParts.push(body.hint.trim());
+    try {
+      const res = await polishText({
+        text: body.text,
+        purpose: body.purpose as PolishPurpose,
+        providerId: body.providerId ?? null,
+        hint: hintParts.join(' · ') || undefined,
+      });
+      return res;
+    } catch (e: any) {
+      req.log.error(e);
+      return reply.code(500).send({ error: e?.message || 'polish failed' });
+    }
+  });
+
   // Settings
   app.get('/api/novels/:novelId/settings', async (req) => {
     const { novelId } = req.params as any;
@@ -301,6 +352,29 @@ export async function registerRoutes(app: FastifyInstance) {
     if (!draft) return { removed: 0 };
     const removed = Drafts.pruneVersions(draft.id, body.keep ?? 5);
     return { removed };
+  });
+
+  /**
+   * AI 起标题：基于该章节当前草稿正文 + 规划摘要/目标，让模型建议一个章节标题。
+   * 不会写回数据库，由前端自行决定是否替换。
+   */
+  app.post('/api/chapter-plans/:id/suggest-title', async (req, reply) => {
+    const { id } = req.params as any;
+    const body = z.object({
+      providerId: z.string().optional().nullable(),
+    }).parse(req.body ?? {});
+    const plan = ChapterPlans.get(id);
+    if (!plan) return reply.code(404).send({ error: 'plan not found' });
+    try {
+      const res = await suggestChapterTitle({
+        planId: id,
+        providerId: body.providerId ?? null,
+      });
+      return res;
+    } catch (e: any) {
+      req.log.error(e);
+      return reply.code(400).send({ error: e?.message || 'suggest title failed' });
+    }
   });
 
   // Context preview (uses overrides saved on the plan)

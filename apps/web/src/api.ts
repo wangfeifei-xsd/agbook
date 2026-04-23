@@ -56,6 +56,43 @@ export const api = {
     request<Novel>(`/api/novels/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteNovel: (id: string) =>
     request<{ ok: true }>(`/api/novels/${id}`, { method: 'DELETE' }),
+  polishNovelField: (
+    novelId: string,
+    params: {
+      text: string;
+      purpose:
+        | 'summary'
+        | 'styleGuide'
+        | 'forbiddenRules'
+        | 'settingSummary'
+        | 'settingContent'
+        | 'outlineSummary'
+        | 'outlineGoal'
+        | 'chapterMustInclude'
+        | 'chapterMustAvoid'
+        | 'chapterContinuity'
+        | 'chapterExtraInstructions';
+      providerId?: string | null;
+      /** Extra context the caller wants appended to the novel-level hint. */
+      hint?: string | null;
+    }
+  ) =>
+    request<{ text: string; providerId: string; providerName: string; model: string }>(
+      `/api/novels/${novelId}/polish`,
+      { method: 'POST', body: JSON.stringify(params) }
+    ),
+  suggestChapterTitle: (planId: string, params?: { providerId?: string | null }) =>
+    request<{
+      title: string;
+      providerId: string;
+      providerName: string;
+      model: string;
+      basedOnVersionId: string | null;
+      contentChars: number;
+    }>(
+      `/api/chapter-plans/${planId}/suggest-title`,
+      { method: 'POST', body: JSON.stringify(params ?? {}) }
+    ),
 
   // settings
   listSettings: (novelId: string) =>

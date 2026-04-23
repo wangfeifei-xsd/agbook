@@ -3,7 +3,11 @@ import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '../api';
 import { useConfirm } from '../components/Confirm';
+import { PolishButton } from '../components/PolishButton';
+import { usePolish } from '../hooks/usePolish';
 import type { SettingItem, SettingType } from '../types';
+
+type PolishField = 'summary' | 'content';
 
 const TYPES: { value: SettingType; label: string }[] = [
   { value: 'worldview', label: '世界观' },
@@ -61,6 +65,23 @@ export function SettingsPage() {
     mutationFn: (id: string) => api.deleteSetting(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['settings', novelId] }),
   });
+
+  const { polish, polishing } = usePolish(novelId);
+
+  const handlePolish = async (field: PolishField, label: string) => {
+    const typeLabel = TYPES.find(t => t.value === form.type)?.label ?? '';
+    const hintParts: string[] = [];
+    if (typeLabel) hintParts.push(`设定类型：${typeLabel}`);
+    if (form.name.trim()) hintParts.push(`条目名称：${form.name.trim()}`);
+    const text = await polish({
+      key: field,
+      label,
+      current: form[field] || '',
+      purpose: field === 'summary' ? 'settingSummary' : 'settingContent',
+      hint: hintParts.join(' · ') || undefined,
+    });
+    if (text !== null) setForm(prev => ({ ...prev, [field]: text }));
+  };
 
   const filtered = items.filter(i => i.type === activeType);
 
@@ -150,13 +171,29 @@ export function SettingsPage() {
               <input className="input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
             </div>
             <div>
-              <label className="label">摘要（简短描述，会优先注入上下文）</label>
+              <div className="flex items-end justify-between mb-1">
+                <label className="label" style={{ marginBottom: 0 }}>摘要（简短描述，会优先注入上下文）</label>
+                <PolishButton
+                  disabled={!form.summary?.trim() || polishing !== null}
+                  loading={polishing === 'summary'}
+                  onClick={() => handlePolish('summary', '摘要')}
+                />
+              </div>
               <textarea className="input" rows={2} value={form.summary}
+                disabled={polishing === 'summary'}
                 onChange={e => setForm({ ...form, summary: e.target.value })} />
             </div>
             <div>
-              <label className="label">详细内容</label>
+              <div className="flex items-end justify-between mb-1">
+                <label className="label" style={{ marginBottom: 0 }}>详细内容</label>
+                <PolishButton
+                  disabled={!form.content?.trim() || polishing !== null}
+                  loading={polishing === 'content'}
+                  onClick={() => handlePolish('content', '详细内容')}
+                />
+              </div>
               <textarea className="input" rows={8} value={form.content}
+                disabled={polishing === 'content'}
                 onChange={e => setForm({ ...form, content: e.target.value })} />
             </div>
             <div>

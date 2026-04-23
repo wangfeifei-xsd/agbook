@@ -4,7 +4,26 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/Confirm';
+import { PolishButton } from '../components/PolishButton';
+import { usePolish, type PolishPurpose } from '../hooks/usePolish';
 import type { ChapterPlan, ChapterRuleSet } from '../types';
+
+type PlanPolishField =
+  | 'summary'
+  | 'goal'
+  | 'mustInclude'
+  | 'mustAvoid'
+  | 'continuity'
+  | 'extra';
+
+const PLAN_POLISH_PURPOSE: Record<PlanPolishField, PolishPurpose> = {
+  summary: 'outlineSummary',
+  goal: 'outlineGoal',
+  mustInclude: 'chapterMustInclude',
+  mustAvoid: 'chapterMustAvoid',
+  continuity: 'chapterContinuity',
+  extra: 'chapterExtraInstructions',
+};
 
 const STATUS_LABEL: Record<ChapterPlan['status'], string> = {
   planned: '待生成',
@@ -148,6 +167,67 @@ function PlanEditor({ plan, outlineOptions, onSave, onDelete }: {
   const [mustIncludeText, setMustIncludeText] = useState((plan.ruleSet.mustIncludePoints ?? []).join('\n'));
   const [mustAvoidText, setMustAvoidText] = useState((plan.ruleSet.mustAvoidPoints ?? []).join('\n'));
 
+  const confirm = useConfirm();
+
+  const { polish, polishing } = usePolish(novelId);
+  const chapterHint = () => {
+    const parts: string[] = [`章节：第 ${form.chapterNumber} 章`];
+    if (form.title.trim()) parts.push(`标题：${form.title.trim()}`);
+    return parts.join(' · ');
+  };
+  const handlePolish = async (field: PlanPolishField, label: string, getCurrent: () => string, setNext: (text: string) => void) => {
+    const text = await polish({
+      key: field,
+      label,
+      current: getCurrent(),
+      purpose: PLAN_POLISH_PURPOSE[field],
+      hint: chapterHint(),
+    });
+    if (text !== null) setNext(text);
+  };
+
+  // Only chapters that already have a generated body should offer AI title
+  // suggestions, since we feed the draft content to the model. We still
+  // allow 'reviewing' / 'finalized' since the draft is present in those.
+  const hasDraftContent =
+    plan.status === 'drafted' ||
+    plan.status === 'reviewing' ||
+    plan.status === 'finalized';
+  const [suggestingTitle, setSuggestingTitle] = useState(false);
+  const handleSuggestTitle = async () => {
+    if (!hasDraftContent) {
+      toast.info('当前章节尚未生成正文，无法基于内容起标题');
+      return;
+    }
+    try {
+      setSuggestingTitle(true);
+      const res = await api.suggestChapterTitle(plan.id);
+      if (!res.title || res.title === form.title.trim()) {
+        toast.info(res.title ? '建议标题与当前标题一致' : '模型未返回标题，请稍后重试');
+        return;
+      }
+      const ok = await confirm({
+        title: 'AI 起标题 · 预览',
+        message:
+          `模型：${res.providerName} · ${res.model}\n` +
+          `分析正文字数：${res.contentChars}\n\n` +
+          `建议标题：\n${res.title}\n\n` +
+          `确认替换当前标题？（替换后仍需点"保存章节计划"才会写入数据库）`,
+        confirmText: '替换',
+        cancelText: '放弃',
+        tone: 'primary',
+      });
+      if (ok) {
+        setForm(prev => ({ ...prev, title: res.title }));
+        toast.success('标题已更新');
+      }
+    } catch (e) {
+      toast.error(`起标题失败：${(e as Error).message}`);
+    } finally {
+      setSuggestingTitle(false);
+    }
+  };
+
   const save = async () => {
     if (saving) return;
     const rules: ChapterRuleSet = {
@@ -195,17 +275,54 @@ function PlanEditor({ plan, outlineOptions, onSave, onDelete }: {
             onChange={e => setForm({ ...form, chapterNumber: Number(e.target.value) })} />
         </div>
         <div>
-          <label className="label">标题</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>标题</label>
+            <PolishButton
+              label="AI 起标题"
+              title={
+                hasDraftContent
+                  ? '根据本章已生成的正文让 AI 建议一个章节标题'
+                  : '需要先生成本章正文（drafted / reviewing / finalized 状态），才能基于内容起标题'
+              }
+              disabled={!hasDraftContent || suggestingTitle}
+              loading={suggestingTitle}
+              onClick={handleSuggestTitle}
+            />
+          </div>
           <input className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
         </div>
         <div className="col-span-2">
-          <label className="label">章节摘要</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>章节摘要</label>
+            <PolishButton
+              disabled={!form.summary?.trim() || polishing !== null}
+              loading={polishing === 'summary'}
+              onClick={() => handlePolish(
+                'summary', '章节摘要',
+                () => form.summary,
+                text => setForm(prev => ({ ...prev, summary: text })),
+              )}
+            />
+          </div>
           <textarea className="input" rows={3} value={form.summary}
+            disabled={polishing === 'summary'}
             onChange={e => setForm({ ...form, summary: e.target.value })} />
         </div>
         <div className="col-span-2">
-          <label className="label">本章目标 / 必须发生</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>本章目标 / 必须发生</label>
+            <PolishButton
+              disabled={!form.goal?.trim() || polishing !== null}
+              loading={polishing === 'goal'}
+              onClick={() => handlePolish(
+                'goal', '本章目标',
+                () => form.goal,
+                text => setForm(prev => ({ ...prev, goal: text })),
+              )}
+            />
+          </div>
           <textarea className="input" rows={2} value={form.goal}
+            disabled={polishing === 'goal'}
             onChange={e => setForm({ ...form, goal: e.target.value })} />
         </div>
         <div>
@@ -274,18 +391,54 @@ function PlanEditor({ plan, outlineOptions, onSave, onDelete }: {
           </select>
         </div>
         <div className="col-span-2">
-          <label className="label">必须出现的情节点（每行一条）</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>必须出现的情节点（每行一条）</label>
+            <PolishButton
+              disabled={!mustIncludeText.trim() || polishing !== null}
+              loading={polishing === 'mustInclude'}
+              onClick={() => handlePolish(
+                'mustInclude', '必须出现的情节点',
+                () => mustIncludeText,
+                text => setMustIncludeText(text),
+              )}
+            />
+          </div>
           <textarea className="input" rows={3} value={mustIncludeText}
+            disabled={polishing === 'mustInclude'}
             onChange={e => setMustIncludeText(e.target.value)} />
         </div>
         <div className="col-span-2">
-          <label className="label">禁止出现的内容（每行一条）</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>禁止出现的内容（每行一条）</label>
+            <PolishButton
+              disabled={!mustAvoidText.trim() || polishing !== null}
+              loading={polishing === 'mustAvoid'}
+              onClick={() => handlePolish(
+                'mustAvoid', '禁止出现的内容',
+                () => mustAvoidText,
+                text => setMustAvoidText(text),
+              )}
+            />
+          </div>
           <textarea className="input" rows={3} value={mustAvoidText}
+            disabled={polishing === 'mustAvoid'}
             onChange={e => setMustAvoidText(e.target.value)} />
         </div>
         <div className="col-span-2">
-          <label className="label">连续性要求（需承接的信息）</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>连续性要求（需承接的信息）</label>
+            <PolishButton
+              disabled={!rule.continuityRequirements?.trim() || polishing !== null}
+              loading={polishing === 'continuity'}
+              onClick={() => handlePolish(
+                'continuity', '连续性要求',
+                () => rule.continuityRequirements ?? '',
+                text => setRule(prev => ({ ...prev, continuityRequirements: text || undefined })),
+              )}
+            />
+          </div>
           <textarea className="input" rows={2} value={rule.continuityRequirements ?? ''}
+            disabled={polishing === 'continuity'}
             onChange={e => setRule({ ...rule, continuityRequirements: e.target.value || undefined })} />
         </div>
         <div className="col-span-2 flex gap-4">
@@ -301,8 +454,20 @@ function PlanEditor({ plan, outlineOptions, onSave, onDelete }: {
           </label>
         </div>
         <div className="col-span-2">
-          <label className="label">额外指令（会原样附加到 Prompt 末尾）</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>额外指令（会原样附加到 Prompt 末尾）</label>
+            <PolishButton
+              disabled={!rule.extraInstructions?.trim() || polishing !== null}
+              loading={polishing === 'extra'}
+              onClick={() => handlePolish(
+                'extra', '额外指令',
+                () => rule.extraInstructions ?? '',
+                text => setRule(prev => ({ ...prev, extraInstructions: text || undefined })),
+              )}
+            />
+          </div>
           <textarea className="input" rows={2} value={rule.extraInstructions ?? ''}
+            disabled={polishing === 'extra'}
             onChange={e => setRule({ ...rule, extraInstructions: e.target.value || undefined })} />
         </div>
       </div>

@@ -3,7 +3,19 @@ import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '../api';
 import { useConfirm } from '../components/Confirm';
+import { PolishButton } from '../components/PolishButton';
+import { usePolish } from '../hooks/usePolish';
 import type { OutlineLevel, OutlineNode } from '../types';
+
+type OutlinePolishField = 'summary' | 'goal';
+
+function outlineHint(levelLabel: string, nodeTitle: string, parentTitle?: string) {
+  const parts: string[] = [];
+  if (levelLabel) parts.push(`节点级别：${levelLabel}`);
+  if (nodeTitle.trim()) parts.push(`节点标题：${nodeTitle.trim()}`);
+  if (parentTitle && parentTitle.trim()) parts.push(`父节点：${parentTitle.trim()}`);
+  return parts.join(' · ') || undefined;
+}
 
 const LEVELS: { value: OutlineLevel; label: string }[] = [
   { value: 'novel', label: '总纲' },
@@ -91,6 +103,20 @@ export function OutlinePage() {
     },
   });
 
+  const { polish: polishCreate, polishing: polishingCreate } = usePolish(novelId);
+  const handlePolishCreate = async (field: OutlinePolishField, label: string) => {
+    const levelLabel = LEVELS.find(l => l.value === form.level)?.label ?? '';
+    const parentTitle = parentId ? nodes.find(n => n.id === parentId)?.title : undefined;
+    const text = await polishCreate({
+      key: field,
+      label,
+      current: form[field] || '',
+      purpose: field === 'summary' ? 'outlineSummary' : 'outlineGoal',
+      hint: outlineHint(levelLabel, form.title, parentTitle),
+    });
+    if (text !== null) setForm(prev => ({ ...prev, [field]: text }));
+  };
+
   const renderTree = (tree: TreeNode[], depth = 0) => (
     <ul>
       {tree.map(node => (
@@ -171,13 +197,29 @@ export function OutlinePage() {
             <input className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
           </div>
           <div>
-            <label className="label">摘要</label>
+            <div className="flex items-end justify-between mb-1">
+              <label className="label" style={{ marginBottom: 0 }}>摘要</label>
+              <PolishButton
+                disabled={!form.summary?.trim() || polishingCreate !== null}
+                loading={polishingCreate === 'summary'}
+                onClick={() => handlePolishCreate('summary', '摘要')}
+              />
+            </div>
             <textarea className="input" rows={3} value={form.summary}
+              disabled={polishingCreate === 'summary'}
               onChange={e => setForm({ ...form, summary: e.target.value })} />
           </div>
           <div>
-            <label className="label">本节目标</label>
+            <div className="flex items-end justify-between mb-1">
+              <label className="label" style={{ marginBottom: 0 }}>本节目标</label>
+              <PolishButton
+                disabled={!form.goal?.trim() || polishingCreate !== null}
+                loading={polishingCreate === 'goal'}
+                onClick={() => handlePolishCreate('goal', '本节目标')}
+              />
+            </div>
             <textarea className="input" rows={2} value={form.goal}
+              disabled={polishingCreate === 'goal'}
               onChange={e => setForm({ ...form, goal: e.target.value })} />
           </div>
           <button className="btn btn-primary w-full" disabled={!form.title.trim() || createMut.isPending}
@@ -197,10 +239,24 @@ function EditPanel({ node, onSave, onDelete, onCreateChild }: {
   onDelete: () => void;
   onCreateChild: () => void;
 }) {
+  const { novelId } = useParams();
   const [form, setForm] = useState({ title: node.title, summary: node.summary ?? '', goal: node.goal ?? '' });
   useMemo(() => {
     setForm({ title: node.title, summary: node.summary ?? '', goal: node.goal ?? '' });
   }, [node.id]);
+
+  const { polish, polishing } = usePolish(novelId);
+  const handlePolish = async (field: OutlinePolishField, label: string) => {
+    const levelLabel = LEVELS.find(l => l.value === node.level)?.label ?? '';
+    const text = await polish({
+      key: field,
+      label,
+      current: form[field] || '',
+      purpose: field === 'summary' ? 'outlineSummary' : 'outlineGoal',
+      hint: outlineHint(levelLabel, form.title),
+    });
+    if (text !== null) setForm(prev => ({ ...prev, [field]: text }));
+  };
 
   return (
     <div className="max-w-2xl">
@@ -217,13 +273,29 @@ function EditPanel({ node, onSave, onDelete, onCreateChild }: {
           <input className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
         </div>
         <div>
-          <label className="label">摘要</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>摘要</label>
+            <PolishButton
+              disabled={!form.summary?.trim() || polishing !== null}
+              loading={polishing === 'summary'}
+              onClick={() => handlePolish('summary', '摘要')}
+            />
+          </div>
           <textarea className="input" rows={4} value={form.summary}
+            disabled={polishing === 'summary'}
             onChange={e => setForm({ ...form, summary: e.target.value })} />
         </div>
         <div>
-          <label className="label">目标 / 预期</label>
+          <div className="flex items-end justify-between mb-1">
+            <label className="label" style={{ marginBottom: 0 }}>目标 / 预期</label>
+            <PolishButton
+              disabled={!form.goal?.trim() || polishing !== null}
+              loading={polishing === 'goal'}
+              onClick={() => handlePolish('goal', '目标 / 预期')}
+            />
+          </div>
           <textarea className="input" rows={3} value={form.goal}
+            disabled={polishing === 'goal'}
             onChange={e => setForm({ ...form, goal: e.target.value })} />
         </div>
         <div className="flex justify-end">
